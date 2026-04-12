@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Классификатор</title>
+    <style>
+        .search-panel {
+            display: none;
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #ccc;
+            background-color: #f9f9f9;
+        }
+        .search-panel.active {
+            display: block;
+        }
+        .error-option {
+            color: red;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    {% if messages %}
+        <ul style="color: red;">
+            {% for message in messages %}
+                <li>{{ message }}</li>
+            {% endfor %}
+        </ul>
+    {% endif %}
+
+    <table width="100%" border="0">
+        <tr>
+            <td width="30%" valign="top">
+                <div>
+                    <button id="openModalBtn">➕ Добавить вершину</button>
+                    <button id="openMoveModalBtn" style="margin-left: 10px;">✂️ Переместить вершину</button>
+                </div>
+                <h1>Дерево:</h1>
+                {% if nodes %}
+                    <ul style="list-style-type: none; padding-left: 0;">
+                    {% for node in nodes %}
+                        <li style="margin-left: {% widthratio node.level 1 2.5 %}rem;">
+                            <a style="text-decoration: none" href="?node_id={{ node.id }}">id: {{ node.id }}, p_id: {{ node.parent_id }} - {{ node.name }}</a>
+                            <span style="white-space: nowrap;">
+                                <form method="POST" style="display: inline;">
+                                    {% csrf_token %}
+                                    <input type="hidden" name="delete_type" value="category">
+                                    <input type="hidden" name="delete_id" value="{{ node.id }}">
+                                    <button type="submit" onclick="return confirm('Удалить категорию «{{ node.name }}»?')">🗑</button>
+                                </form>
+                                <button type="button" class="search-btn" data-node-id="{{ node.id }}" data-node-name="{{ node.name }}" style="cursor: pointer;">🔍</button>
+                            </span>
+                        </li>
+                    {% endfor %}
+                    </ul>
+                {% else %}
+                    <p>Нет данных</p>
+                {% endif %}
+            </td>
+            <td width="70%" valign="top">
+                <h1>Содержимое:</h1>
+
+                <div id="searchPanel" class="search-panel">
+                    <h3 id="searchCategoryTitle">Поиск для категории</h3>
+                    <form method="GET" id="searchForm">
+                        <input type="hidden" name="search_category_id" id="search_category_id">
+                        <div>
+                            <input type="radio" id="search_descendants" name="search_type" value="descendants">
+                            <label for="search_descendants">Поиск всех потомков</label>
+                        </div>
+                        <div>
+                            <input type="radio" id="search_parents" name="search_type" value="parents">
+                            <label for="search_parents">Поиск всех родителей</label>
+                        </div>
+                        <div>
+                            <input type="radio" id="search_terminals" name="search_type" value="terminals">
+                            <label for="search_terminals">Поиск всех терминальных классов (товаров)</label>
+                        </div>
+                        <button type="submit">Выполнить поиск</button>
+                        <button type="button" id="closeSearchPanel">Закрыть</button>
+                    </form>
+                </div>
+
+                {% if search_category %}
+                    <h2>Поиск для категории "{{ search_category.name }}" (id={{ search_category.id }})</h2>
+
+                    {% if search_type == 'descendants' %}
+                        <h3>Все потомки:</h3>
+                        {% if descendants %}
+                            <ul>
+                            {% for descendant in descendants %}
+                                <li><a href="?node_id={{ descendant.id }}">{{ descendant.name }}</a> (id={{ descendant.id }})</li>
+                            {% endfor %}
+                            </ul>
+                        {% else %}
+                            <p>Нет потомков</p>
+                        {% endif %}
+                    {% elif search_type == 'parents' %}
+                        <h3>Все родители:</h3>
+                        {% if parents %}
+                            <ul>
+                            {% for parent in parents %}
+                                <li><a href="?node_id={{ parent.id }}">{{ parent.name }}</a> (id={{ parent.id }})</li>
+                            {% endfor %}
+                            </ul>
+                        {% else %}
+                            <p>Нет родителей (корневая категория)</p>
+                        {% endif %}
+                    {% elif search_type == 'terminals' %}
+                        <h3>Терминальные вершины (товары):</h3>
+                        {% if terminal_products %}
+                            <table border="1" cellpadding="5" cellspacing="0" width="100%">
+                                <thead>
+                                    <tr>
+                                        <th>Название товара</th>
+                                        <th>SKU</th>
+                                        <th>Цена (руб)</th>
+                                        <th>Поставщик</th>
+                                        <th>Вес (грамм)</th>
+                                        <th>Действие</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                {% for product in terminal_products %}
+                                    <tr>
+                                        <td>{{ product.name }}</a></td>
+                                        <td>{{ product.sku|default:"—" }}</a></td>
+                                        <td>{{ product.price }}</a></td>
+                                        <td>{{ product.supplier }}</a></td>
+                                        <td>{{ product.weight_gram }}</a></td>
+                                        <td>
+                                            <form method="POST" style="display: inline;">
+                                                {% csrf_token %}
+                                                <input type="hidden" name="delete_type" value="product">
+                                                <input type="hidden" name="delete_id" value="{{ product.id }}">
+                                                <button type="submit" onclick="return confirm('Удалить товар «{{ product.name }}»?')">🗑</button>
+                                            </form>
+                                        </a>
+                                    </tr>
+                                {% endfor %}
+                                </tbody>
+                            </table>
+                        {% else %}
+                            <p>Нет товаров в этой категории и её подкатегориях</p>
+                        {% endif %}
+                    {% endif %}
+
+                    <a href="?">Очистить результаты поиска</a>
+
+                {% elif selected_category %}
+                    <h2>{{ selected_category }}</h2>
+                    {% if products %}
+                        <table border="1" cellpadding="5" cellspacing="0" width="100%">
+                            <thead>
+                                <tr>
+                                    <th>Название товара</th>
+                                    <th>SKU</th>
+                                    <th>Цена (руб)</th>
+                                    <th>Поставщик</th>
+                                    <th>Вес (грамм)</th>
+                                    <th>Действие</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            {% for product in products %}
+                                <tr>
+                                    <td>{{ product.name }}</a></td>
+                                    <td>{{ product.sku|default:"—" }}</a></td>
+                                    <td>{{ product.price }}</a></td>
+                                    <td>{{ product.supplier }}</a></td>
+                                    <td>{{ product.weight_gram }}</a></td>
+                                    <td>
+                                        <form method="POST" style="display: inline;">
+                                            {% csrf_token %}
+                                            <input type="hidden" name="delete_type" value="product">
+                                            <input type="hidden" name="delete_id" value="{{ product.id }}">
+                                            <button type="submit" onclick="return confirm('Удалить товар «{{ product.name }}»?')">🗑</button>
+                                        </form>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                            </tbody>
+                        <tr>
+                    {% else %}
+                        <p>В этой категории нет товаров</p>
+                    {% endif %}
+                {% else %}
+                    <p>Выберите категорию слева или нажмите 🔍 для поиска</p>
+                {% endif %}
+            </td>
+        </tr>
+    </table>
+
+    <div id="overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 999;"></div>
+
+    <!-- Всплывающее окно для добавления вершины -->
+    <div id="modal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: white; padding: 20px; border: 1px solid #ccc; z-index: 1000; min-width: 300px;">
+        <h3>Добавить новую вершину</h3>
+        <form method="POST">
+            {% csrf_token %}
+
+            <div>
+                <label>Тип вершины:</label><br>
+                <input type="radio" id="type_category" name="node_type" value="category" checked>
+                <label for="type_category">Категория (промежуточная)</label><br>
+                <input type="radio" id="type_product" name="node_type" value="product">
+                <label for="type_product">Товар (терминальная)</label>
+            </div>
+
+            <div>
+                <label for="name">Название:</label><br>
+                <input type="text" id="name" name="name" required>
+            </div>
+
+            <div id="unit_field">
+                <label for="unit">Единица измерения (грамм, штука, кг и т.д.):</label><br>
+                <input type="text" id="unit" name="unit">
+            </div>
+
+            <div>
+                <label for="parent_id">Родительская категория:</label><br>
+                <select id="parent_id" name="parent_id">
+                    <option value="">— Корневая категория —</option>
+                    {% for node in nodes %}
+                        <option value="{{ node.id }}">{{ node.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div id="product_fields" style="display: none;">
+                <div>
+                    <label for="sku">SKU:</label><br>
+                    <input type="text" id="sku" name="sku">
+                </div>
+                <div>
+                    <label for="price">Цена (руб):</label><br>
+                    <input type="number" id="price" name="price" step="1" min="0">
+                </div>
+                <div>
+                    <label for="supplier">Поставщик:</label><br>
+                    <input type="text" id="supplier" name="supplier">
+                </div>
+                <div>
+                    <label for="weight_gram">Вес (грамм):</label><br>
+                    <input type="number" id="weight_gram" name="weight_gram" step="1" min="0">
+                </div>
+            </div>
+
+            <div>
+                <button type="button" id="cancelBtn">Отмена</button>
+                <button type="submit">Добавить</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Всплывающее окно для перемещения вершины -->
+    <div id="moveModal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: white; padding: 20px; border: 1px solid #ccc; z-index: 1000; min-width: 400px;">
+        <h3>Переместить вершину</h3>
+        <form method="POST">
+            {% csrf_token %}
+            <input type="hidden" name="move_action" value="move">
+
+            <div>
+                <label for="move_node_id">Какую вершину перемещаем:</label><br>
+                <select id="move_node_id" name="move_node_id" required>
+                    <option value="">— Выберите вершину —</option>
+                    {% for node in nodes %}
+                        <option value="{{ node.id }}">{{ node.name }} (id={{ node.id }})</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div style="margin-top: 15px;">
+                <label>Тип перемещения:</label><br>
+                <input type="radio" id="move_type_parent" name="move_type" value="change_parent" checked>
+                <label for="move_type_parent">Переместить к другой вершине (смена родителя)</label><br>
+                <input type="radio" id="move_type_sibling" name="move_type" value="reorder">
+                <label for="move_type_sibling">Изменить порядок среди братьев (на том же уровне)</label>
+            </div>
+
+            <div id="target_parent_div" style="margin-top: 15px;">
+                <label for="new_parent_id">Куда переместить (новая родительская вершина):</label><br>
+                <select id="new_parent_id" name="new_parent_id">
+                    <option value="">— Корневая категория —</option>
+                    {% for node in nodes %}
+                        <option value="{{ node.id }}">{{ node.name }} (id={{ node.id }})</option>
+                    {% endfor %}
+                </select>
+                <small style="display: block; color: gray; margin-top: 5px;">Нельзя переместить в самого себя или в своего потомка</small>
+            </div>
+
+            <div id="target_position_div" style="display: none; margin-top: 15px;">
+                <label for="target_position">Переместить после вершины:</label><br>
+                <select id="target_position" name="target_position">
+                    <option value="">— В начало —</option>
+                </select>
+            </div>
+
+            <div style="margin-top: 20px;">
+                <button type="button" id="cancelMoveBtn">Отмена</button>
+                <button type="submit" id="submitMoveBtn">Переместить</button>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        var nodesData = [
+            {% for node in nodes %}
+                {id: {{ node.id }}, name: "{{ node.name|escapejs }}", parent_id: {{ node.parent_id|default:'null' }}},
+            {% endfor %}
+        ];
+
+        var modal = document.getElementById('modal');
+        var moveModal = document.getElementById('moveModal');
+        var overlay = document.getElementById('overlay');
+        var openBtn = document.getElementById('openModalBtn');
+        var openMoveBtn = document.getElementById('openMoveModalBtn');
+        var cancelBtn = document.getElementById('cancelBtn');
+        var cancelMoveBtn = document.getElementById('cancelMoveBtn');
+        var typeCategory = document.getElementById('type_category');
+        var typeProduct = document.getElementById('type_product');
+        var productFields = document.getElementById('product_fields');
+        var unitField = document.getElementById('unit_field');
+
+        var moveTypeParent = document.getElementById('move_type_parent');
+        var moveTypeSibling = document.getElementById('move_type_sibling');
+        var targetParentDiv = document.getElementById('target_parent_div');
+        var targetPositionDiv = document.getElementById('target_position_div');
+        var moveNodeSelect = document.getElementById('move_node_id');
+        var targetPositionSelect = document.getElementById('target_position');
+        var newParentSelect = document.getElementById('new_parent_id');
+        var submitMoveBtn = document.getElementById('submitMoveBtn');
+
+        var searchPanel = document.getElementById('searchPanel');
+        var searchCategoryId = document.getElementById('search_category_id');
+        var searchCategoryTitle = document.getElementById('searchCategoryTitle');
+        var closeSearchBtn = document.getElementById('closeSearchPanel');
+        var searchBtns = document.querySelectorAll('.search-btn');
+
+        function openModalFunc() {
+            modal.style.display = 'block';
+            overlay.style.display = 'block';
+        }
+
+        function openMoveModalFunc() {
+            moveModal.style.display = 'block';
+            overlay.style.display = 'block';
+            updateTargetPositionOptions();
+            updateParentOptions();
+        }
+
+        function closeModalFunc() {
+            modal.style.display = 'none';
+            moveModal.style.display = 'none';
+            overlay.style.display = 'none';
+        }
+
+        function toggleFields() {
+            if (typeProduct.checked) {
+                productFields.style.display = 'block';
+                unitField.style.display = 'none';
+            } else {
+                productFields.style.display = 'none';
+                unitField.style.display = 'block';
+            }
+        }
+
+        function toggleMoveType() {
+            if (moveTypeParent.checked) {
+                targetParentDiv.style.display = 'block';
+                targetPositionDiv.style.display = 'none';
+            } else {
+                targetParentDiv.style.display = 'none';
+                targetPositionDiv.style.display = 'block';
+                updateTargetPositionOptions();
+            }
+        }
+
+        function updateParentOptions() {
+            var selectedNodeId = moveNodeSelect.value;
+
+            if (!selectedNodeId) {
+                return;
+            }
+
+            // Находим всех потомков выбранной вершины
+            var selectedIdNum = parseInt(selectedNodeId);
+            var descendantsIds = [];
+
+            function findDescendants(nodeId) {
+                for (var i = 0; i < nodesData.length; i++) {
+                    var parentId = nodesData[i].parent_id;
+                    if (parentId === nodeId || parentId === nodeId.toString()) {
+                        descendantsIds.push(nodesData[i].id);
+                        findDescendants(nodesData[i].id);
+                    }
+                }
+            }
+            findDescendants(selectedIdNum);
+
+            // Обновляем опции, блокируя саму вершину и её потомков
+            for (var i = 0; i < newParentSelect.options.length; i++) {
+                var option = newParentSelect.options[i];
+                var optionValue = parseInt(option.value);
+
+                // Блокируем саму вершину
+                if (optionValue === selectedIdNum) {
+                    option.style.color = 'red';
+                    option.style.fontStyle = 'italic';
+                    option.disabled = true;
+                    option.text = option.text.replace(/ ⚠️.*$/, '') + ' ⚠️ НЕЛЬЗЯ (это та же вершина)';
+                }
+                // Блокируем потомков
+                else if (descendantsIds.indexOf(optionValue) !== -1) {
+                    option.style.color = 'red';
+                    option.style.fontStyle = 'italic';
+                    option.disabled = true;
+                    option.text = option.text.replace(/ ⚠️.*$/, '') + ' ⚠️ НЕЛЬЗЯ (это потомок)';
+                }
+                else {
+                    option.style.color = '';
+                    option.style.fontStyle = '';
+                    option.disabled = false;
+                    option.text = option.text.replace(/ ⚠️.*$/, '');
+                }
+            }
+        }
+
+        function updateTargetPositionOptions() {
+            var selectedNodeId = parseInt(moveNodeSelect.value);
+            if (!selectedNodeId || isNaN(selectedNodeId)) {
+                targetPositionSelect.innerHTML = '<option value="">— Сначала выберите вершину —</option>';
+                return;
+            }
+
+            // Находим родителя выбранной вершины
+            var parentId = null;
+            for (var i = 0; i < nodesData.length; i++) {
+                if (nodesData[i].id === selectedNodeId) {
+                    parentId = nodesData[i].parent_id !== null && nodesData[i].parent_id !== 'null' ? parseInt(nodesData[i].parent_id) : null;
+                    break;
+                }
+            }
+
+            // Собираем всех братьев (категории с тем же parent_id, исключая выбранную)
+            var siblings = [];
+            for (var i = 0; i < nodesData.length; i++) {
+                var node = nodesData[i];
+                var nodeParentId = (node.parent_id !== null && node.parent_id !== 'null') ? parseInt(node.parent_id) : null;
+                if (node.id !== selectedNodeId && nodeParentId === parentId) {
+                    siblings.push(node);
+                }
+            }
+
+            var options = '<option value="">— В начало —</option>';
+            for (var i = 0; i < siblings.length; i++) {
+                options += '<option value="' + siblings[i].id + '">После ' + siblings[i].name + '</option>';
+            }
+            if (siblings.length === 0) {
+                options = '<option value="">— Нет других вершин на этом уровне —</option>';
+            }
+            targetPositionSelect.innerHTML = options;
+        }
+
+        function showSearchPanel(nodeId, nodeName) {
+            searchCategoryId.value = nodeId;
+            searchCategoryTitle.innerHTML = 'Поиск для категории "' + nodeName + '" (id=' + nodeId + ')';
+            searchPanel.classList.add('active');
+            document.querySelectorAll('#searchForm input[type="radio"]').forEach(function(radio) {
+                radio.checked = false;
+            });
+        }
+
+        function closeSearchPanel() {
+            searchPanel.classList.remove('active');
+        }
+
+        // Валидация перед отправкой
+        function validateMove() {
+            var selectedNodeId = parseInt(moveNodeSelect.value);
+            var newParentId = parseInt(newParentSelect.value);
+
+            if (selectedNodeId === newParentId) {
+                alert('Нельзя переместить вершину в саму себя!');
+                return false;
+            }
+
+            // Проверка на потомка
+            function isDescendant(parentId, childId) {
+                for (var i = 0; i < nodesData.length; i++) {
+                    if (nodesData[i].parent_id == parentId) {
+                        if (nodesData[i].id === childId) return true;
+                        if (isDescendant(nodesData[i].id, childId)) return true;
+                    }
+                }
+                return false;
+            }
+
+            if (isDescendant(selectedNodeId, newParentId)) {
+                alert('Нельзя переместить вершину в своего потомка!');
+                return false;
+            }
+
+            return true;
+        }
+
+        openBtn.onclick = openModalFunc;
+        openMoveBtn.onclick = openMoveModalFunc;
+        cancelBtn.onclick = closeModalFunc;
+        cancelMoveBtn.onclick = closeModalFunc;
+        overlay.onclick = closeModalFunc;
+
+        typeCategory.onclick = toggleFields;
+        typeProduct.onclick = toggleFields;
+
+        moveTypeParent.onclick = toggleMoveType;
+        moveTypeSibling.onclick = toggleMoveType;
+
+        moveNodeSelect.onchange = function() {
+            updateTargetPositionOptions();
+            updateParentOptions();
+        };
+
+        // Добавляем валидацию перед отправкой формы
+        if (submitMoveBtn) {
+            submitMoveBtn.onclick = function(e) {
+                if (!validateMove()) {
+                    e.preventDefault();
+                    return false;
+                }
+            };
+        }
+
+        searchBtns.forEach(function(btn) {
+            btn.onclick = function() {
+                var nodeId = this.getAttribute('data-node-id');
+                var nodeName = this.getAttribute('data-node-name');
+                showSearchPanel(nodeId, nodeName);
+            };
+        });
+
+        if (closeSearchBtn) {
+            closeSearchBtn.onclick = closeSearchPanel;
+        }
+
+        // Инициализация при загрузке
+        updateParentOptions();
+    </script>
+</body>
+</html>
