@@ -11,6 +11,38 @@ def base_product_output():
     return all_base_product
 
 
+#проверка на цикл, создаст ли перенос (move_category) цикл
+def would_create_cycle(all_base, node_id, new_parent_id):
+    if new_parent_id is None:
+        return False
+
+    node_id = int(node_id)
+    new_parent_id = int(new_parent_id)
+
+    # перенос в самого себя
+    if node_id == new_parent_id:
+        return True
+
+    # перенос в своего потомка
+    stack = [node_id]
+    visited = set()
+
+    while stack:
+        current = stack.pop()
+
+        if current in visited:
+            continue
+        visited.add(current)
+
+        for node in all_base:
+            if node.parent_id == current:
+                if node.id == new_parent_id:
+                    return True
+                stack.append(node.id)
+
+    return False
+
+
 """
 Реализован через обход в глубину с добавлением еще одного параметра level
 (для корректного отображение древовидной структуры)
@@ -28,6 +60,7 @@ def build_tree_with_levels(all_base, p_id=None, current_level=0):
 
     return result_with_levels
 
+
 """
 все тот же обход в глубину для !поиска всех дочерних вершин!, только для конкретной выбранной вершины
 """
@@ -41,8 +74,9 @@ def search_child_nodes(all_base, node_id):
             result_children_id.extend(children_id)
     return result_children_id
 
+
 """
-поиск всех товаров и поиск названия категории(для вывода в правой части). Но также используется и для поиска 
+поиск всех товаров и поиск названия категории(для вывода в правой части). Но также используется и для поиска
 терминальных классов, т.к. частично тут реализуется
 """
 def display_parent_product(all_base, all_base_product, node_id):
@@ -63,6 +97,7 @@ def display_parent_product(all_base, all_base_product, node_id):
                 result_product.append(product)
 
     return selected_category, result_product
+
 
 """
 поиск всех родителей
@@ -87,6 +122,7 @@ def search_parent_nodes(all_base, node_id):
                 break
 
     return result_parents
+
 
 def add_category(name, parent_id, unit):
     if ClassifierNode.objects.filter(name=name).exists():
@@ -115,6 +151,7 @@ def add_category(name, parent_id, unit):
     new_category.save()
     return new_category
 
+
 def add_product(name, category_id, sku, price, supplier, weight_gram):
     if Product.objects.filter(name=name).exists():
         raise ValueError(f"Товар с именем '{name}' уже существует")
@@ -122,7 +159,7 @@ def add_product(name, category_id, sku, price, supplier, weight_gram):
     if sku and Product.objects.filter(sku=sku).exists():
         raise ValueError(f"Товар с SKU '{sku}' уже существует")
 
-    #вычисление следующего id для обхода проблемы с sequence
+    # вычисление следующего id для обхода проблемы с sequence
     last_all = Product.objects.all().order_by('-id').first()
     if last_all:
         next_id = last_all.id + 1
@@ -141,12 +178,13 @@ def add_product(name, category_id, sku, price, supplier, weight_gram):
     new_product.save()
     return new_product
 
+
 def search_delete_category(delete_id):
-    # Проверка: есть ли товары у категории
+    #проверка есть ли товары у категории
     for product in base_product_output():
         if product.classifier_node_id == int(delete_id):
-            raise ValueError(f"Нельзя удалить категорию, у которой есть товары. Сначала удалите товары")
-        
+            raise ValueError("Нельзя удалить категорию, у которой есть товары. Сначала удалите товары")
+
     parent_delete_category = None
     category_to_delete = None
 
@@ -159,7 +197,7 @@ def search_delete_category(delete_id):
     for element in base_output():
         if element.parent_id == int(delete_id):
             element.parent_id = parent_delete_category
-            element.save()  #сохранение в БД
+            element.save()  # сохранение в БД
 
     for product in base_product_output():
         if product.classifier_node_id == int(delete_id):
@@ -168,6 +206,7 @@ def search_delete_category(delete_id):
 
     if category_to_delete:
         category_to_delete.delete()
+
 
 def search_delete_product(delete_id):
     product_to_delete = None
@@ -180,18 +219,29 @@ def search_delete_product(delete_id):
     if product_to_delete:
         product_to_delete.delete()
 
+
 """
 перемещение(смена родителя)
 """
 def move_category(category_id, new_parent_id):
-    for element in base_output():
-        if element.id == int(category_id):
+    category_id = int(category_id)
+    if new_parent_id is not None:
+        new_parent_id = int(new_parent_id)
+
+    all_nodes = list(base_output())
+
+    # проверка цикла
+    if would_create_cycle(all_nodes, category_id, new_parent_id):
+        raise ValueError("Нельзя переместить вершину в саму себя или в своего потомка (цикл)")
+
+    for element in all_nodes:
+        if element.id == category_id:
             element.parent_id = new_parent_id
 
-            #новый sort_order относительно детей нового родителя
+            # новый sort_order относительно детей нового родителя
             siblings = []
-            for e in base_output():
-                if e.parent_id == new_parent_id and e.id != int(category_id):
+            for e in all_nodes:
+                if e.parent_id == new_parent_id and e.id != category_id:
                     siblings.append(e)
 
             if siblings:
@@ -205,9 +255,7 @@ def move_category(category_id, new_parent_id):
 
 
 def reorder_category(category_id, target_position_id):
-    # target_position_id: id категории, ПОСЛЕ которой нужно вставить (None = в начало)
-
-    # Находим текущую категорию
+    
     current = None
     for e in base_output():
         if e.id == int(category_id):
