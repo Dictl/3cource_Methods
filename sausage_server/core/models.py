@@ -16,7 +16,7 @@ class ClassifierNode(models.Model):
     sort_order = models.IntegerField()
 
     class Meta:
-        managed = False
+        managed = True
         db_table = 'classifier_node'
 
 
@@ -31,5 +31,5 @@ class Product(models.Model):
     weight_gram = models.IntegerField()
 
     class Meta:
-        managed = False
+        managed = True
         db_table = 'product'

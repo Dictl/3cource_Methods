@@ -237,6 +237,7 @@ function updateTargetPositionOptions() {
 }
 
 function renderTree() {
+    treeContainer.innerHTML = '';
     if (!treeContainer) return;
 
     if (!nodesData.length) {
@@ -295,48 +296,53 @@ function renderCategoryContent(payload) {
     contentContainer.innerHTML = '<h2>' + escapeHtml(category.name) + ' (id=' + category.id + ')</h2>' + renderProductsTable(products);
 }
 
-function renderSearchResult(data) {
+function renderSearchResult(data, searchType, categoryId) {
     var category = data.category;
-    var searchType = data.search_type;
 
     var html = '<h2>Поиск для категории "' + escapeHtml(category.name) + '" (id=' + category.id + ')</h2>';
 
     if (searchType === 'descendants') {
         html += '<h3>Все потомки:</h3>';
-        if (data.descendants.length) {
+        var items = data.children || [];
+        if (items.length) {
             html += '<ul>';
-            for (var i = 0; i < data.descendants.length; i++) {
-                var d = data.descendants[i];
+            items.forEach(function(d) {
                 html += '<li><a href="#" class="node-link" data-node-id="' + d.id + '">' + escapeHtml(d.name) + '</a> (id=' + d.id + ')</li>';
-            }
+            });
             html += '</ul>';
         } else {
             html += '<p>Нет потомков</p>';
         }
     } else if (searchType === 'parents') {
         html += '<h3>Все родители:</h3>';
-        if (data.parents.length) {
+        var items = data.parents || [];
+        if (items.length) {
             html += '<ul>';
-            for (var j = 0; j < data.parents.length; j++) {
-                var p = data.parents[j];
+            items.forEach(function(p) {
                 html += '<li><a href="#" class="node-link" data-node-id="' + p.id + '">' + escapeHtml(p.name) + '</a> (id=' + p.id + ')</li>';
-            }
+            });
             html += '</ul>';
         } else {
             html += '<p>Нет родителей (корневая категория)</p>';
         }
     } else if (searchType === 'terminals') {
-        html += '<h3>Терминальные вершины (товары):</h3>';
-        if (data.terminal_products.length) {
-            html += renderProductsTable(data.terminal_products);
+        html += '<h3>Терминальные узлы:</h3>';
+        var items = data.terminal_nodes || [];
+        if (items.length) {
+            html += '<ul>';
+            items.forEach(function(t) {
+                html += '<li><a href="#" class="node-link" data-node-id="' + t.id + '">' + escapeHtml(t.name) + '</a> (id=' + t.id + ')</li>';
+            });
+            html += '</ul>';
         } else {
-            html += '<p>Нет товаров в этой категории и ее подкатегориях</p>';
+            html += '<p>Нет терминальных узлов</p>';
         }
     }
 
     html += '<p><button type="button" id="clearSearchBtn">Очистить результаты поиска</button></p>';
     contentContainer.innerHTML = html;
 }
+
 
 function loadTree() {
     return apiRequest(apiUrls.tree)
@@ -356,7 +362,7 @@ function loadCategoryProducts(categoryId) {
     selectedCategoryId = categoryId;
     clearMessage();
 
-    apiRequest('/api/category/' + categoryId + '/products/')
+    apiRequest('/api/categories/' + categoryId + '/products/')
         .then(function (data) {
             renderCategoryContent(data);
         })
@@ -478,11 +484,28 @@ function handleSearchSubmit(e) {
     }
 
     var categoryId = searchCategoryIdInput.value;
-    var url = apiUrls.search + '?search_category_id=' + encodeURIComponent(categoryId) + '&search_type=' + encodeURIComponent(selectedRadio.value);
+    if (!categoryId) {
+        showMessage('Категория не выбрана', 'error');
+        return;
+    }
+
+    var searchType = selectedRadio.value;
+    var url;
+
+    if (searchType === 'descendants') {
+        url = '/api/categories/' + categoryId + '/children/';
+    } else if (searchType === 'parents') {
+        url = '/api/categories/' + categoryId + '/parents/';
+    } else if (searchType === 'terminals') {
+        url = '/api/categories/' + categoryId + '/terminals/';
+    } else {
+        showMessage('Неизвестный тип поиска', 'error');
+        return;
+    }
 
     apiRequest(url)
         .then(function (data) {
-            renderSearchResult(data);
+            renderSearchResult(data, searchType, categoryId);
             closeSearchPanel();
         })
         .catch(function (err) {
@@ -492,18 +515,21 @@ function handleSearchSubmit(e) {
 
 function handleDelete(deleteType, deleteId, itemName) {
     if (!confirm('Удалить ' + itemName + '?')) return;
-
     clearMessage();
-    apiRequest(apiUrls.delete, {
-        method: 'POST',
+
+    var url = deleteType === 'category' ? apiUrls.deleteCategory : apiUrls.deleteProduct;
+
+    apiRequest(url, {
+        method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            delete_type: deleteType,
-            delete_id: deleteId
-        })
+        body: JSON.stringify({ delete_id: deleteId })
     })
         .then(function () {
             showMessage('Удалено', 'success');
+            if (deleteType === 'category' && deleteId === selectedCategoryId) {
+                selectedCategoryId = null;
+                contentContainer.innerHTML = '<p>Выберите категорию слева</p>';
+            }
             return loadTree();
         })
         .then(function () {
@@ -576,4 +602,3 @@ document.addEventListener('click', handleDocumentClick);
 toggleFields();
 toggleMoveType();
 loadTree();
-

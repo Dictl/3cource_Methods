@@ -2,6 +2,7 @@ import json
 from django.shortcuts import get_object_or_404
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
+from core.models import ClassifierNode, Product
 
 from .models import ClassifierNode
 from .service import (
@@ -17,6 +18,7 @@ from .service import (
     search_delete_category,
     search_delete_product,
     search_parent_nodes,
+    has_children,
 )
 
 
@@ -82,57 +84,39 @@ def api_category_products(request, category_id):
         }
     )
 
+@require_http_methods(["GET"])
+def api_get_children(request, category_id):
+    all_cats = base_output()
+    category = get_object_or_404(ClassifierNode, id=category_id)
+    descendants = search_child_nodes(all_cats, category_id)
+    return JsonResponse({"ok": True, "data": {
+        "category": {"id": category.id, "name": category.name, "parent_id": category.parent_id},
+        "children": [{"id": c.id, "name": c.name, "parent_id": c.parent_id} for c in descendants]
+    }})
+
 
 @require_http_methods(["GET"])
-def api_search(request):
-    search_type = request.GET.get("search_type")
-    search_category_id = request.GET.get("search_category_id")
-
-    if not search_category_id:
-        return _json_error("Не передан search_category_id")
-
-    try:
-        search_category_id = int(search_category_id)
-    except ValueError:
-        return _json_error("search_category_id должен быть числом")
-
+def api_get_parents(request, category_id):
     all_cats = base_output()
-    all_prods = base_product_output()
-    category = get_object_or_404(ClassifierNode, id=search_category_id)
+    category = get_object_or_404(ClassifierNode, id=category_id)
+    parents = search_parent_nodes(all_cats, category_id)
+    return JsonResponse({"ok": True, "data": {
+        "category": {"id": category.id, "name": category.name, "parent_id": category.parent_id},
+        "parents": [{"id": p.id, "name": p.name, "parent_id": p.parent_id} for p in parents]
+    }})
 
-    response_data = {
-        "category": {
-            "id": category.id,
-            "name": category.name,
-            "parent_id": category.parent_id,
-        },
-        "search_type": search_type,
-        "descendants": [],
-        "parents": [],
-        "terminal_products": [],
-    }
 
-    if search_type == "descendants":
-        descendants = search_child_nodes(all_cats, search_category_id)
-        response_data["descendants"] = [
-            {"id": c.id, "name": c.name, "parent_id": c.parent_id} for c in descendants
-        ]
-    elif search_type == "parents":
-        parents = search_parent_nodes(all_cats, search_category_id)
-        response_data["parents"] = [
-            {"id": c.id, "name": c.name, "parent_id": c.parent_id} for c in parents
-        ]
-    elif search_type == "terminals":
-        descendants = search_child_nodes(all_cats, search_category_id)
-        descendants.append(category)
-        category_ids = {c.id for c in descendants}
-        terminal_products = [p for p in all_prods if p.classifier_node_id in category_ids]
-        response_data["terminal_products"] = [_serialize_product(p) for p in terminal_products]
-    else:
-        return _json_error("Некорректный search_type")
-
-    return JsonResponse({"ok": True, "data": response_data})
-
+@require_http_methods(["GET"])
+def api_get_terminals(request, category_id):
+    all_cats = base_output()
+    category = get_object_or_404(ClassifierNode, id=category_id)
+    descendants = search_child_nodes(all_cats, category_id)
+    descendants.append(category)
+    terminal_nodes = [n for n in descendants if not has_children(all_cats, n.id)]
+    return JsonResponse({"ok": True, "data": {
+        "category": {"id": category.id, "name": category.name, "parent_id": category.parent_id},
+        "terminal_nodes": [{"id": n.id, "name": n.name, "parent_id": n.parent_id} for n in terminal_nodes]
+    }})
 
 @require_http_methods(["POST"])
 def api_add_category(request):
@@ -188,31 +172,14 @@ def api_add_product(request):
 
 
 @require_http_methods(["POST"])
-def api_delete(request):
-    try:
-        payload = _parse_json(request)
-        delete_type = payload.get("delete_type")
-        delete_id = int(payload.get("delete_id"))
-
-        if delete_type == "category":
-            search_delete_category(delete_id)
-        elif delete_type == "product":
-            search_delete_product(delete_id)
-        else:
-            return _json_error("Некорректный delete_type")
-
-        return JsonResponse({"ok": True})
-    except ValueError as e:
-        return _json_error(str(e))
-
-
-@require_http_methods(["POST"])
 def api_move_category(request):
     try:
         payload = _parse_json(request)
         category_id = int(payload.get("category_id"))
         new_parent_id = payload.get("new_parent_id")
         new_parent_id = None if new_parent_id in ("", None) else int(new_parent_id)
+        if Product.objects.filter(classifier_node_id=new_parent_id).exists():
+            raise ValueError("Нельзя переместить категорию в терминальный узел, содержащий товары")
 
         move_category(category_id, new_parent_id)
         return JsonResponse({"ok": True, "message": "Категория перемещена"})
@@ -231,4 +198,127 @@ def api_reorder_category(request):
         reorder_category(category_id, target_position_id)
         return JsonResponse({"ok": True, "message": "Порядок обновлен"})
     except ValueError as e:
+        return _json_error(str(e))
+
+@require_http_methods(["GET"])
+def api_nodes_move_metadata(request):
+    moving_node_id = request.GET.get("node_id")
+    if not moving_node_id:
+        return _json_error("node_id required")
+
+    all_base = base_output()
+    all_products = base_product_output()
+    moving_node_id = int(moving_node_id)
+
+    child_ids = {child.id for child in search_child_nodes(all_base, moving_node_id)} | {moving_node_id}
+    terminal_ids = {p.classifier_node_id for p in all_products}
+
+    result = []
+    for node in build_tree_with_levels(all_base):
+        reason = None
+        if node.id in child_ids:
+            reason = "cycle"
+        elif node.id in terminal_ids:
+            reason = "terminal"
+
+        result.append({
+            "id": node.id,
+            "name": node.name,
+            "level": node.level,  # type: ignore
+            "disabled": reason is not None,
+            "reason": reason
+        })
+
+    return JsonResponse({"nodes": result})
+
+@require_http_methods(["GET"])
+def api_category(request, category_id):
+    category_id = int(category_id)
+    category = get_object_or_404(ClassifierNode, id=category_id)
+
+    # Получаем информацию о категории
+    category_data = {
+        "id": category.id,
+        "name": category.name,
+        "parent_id": category.parent_id,
+        "unit": category.unit,
+        "sort_order": category.sort_order,
+    }
+
+    descendants = search_child_nodes(base_output(), category_id)
+    descendants_data = [
+        {
+            "id": d.id,
+            "name": d.name,
+            "parent_id": d.parent_id,
+        }
+        for d in descendants
+    ]
+
+    return JsonResponse({
+        "ok": True,
+        "data": {
+            "category": category_data,
+            "descendants": descendants_data
+        }
+    })
+
+@require_http_methods(["GET"])
+def api_categories(request):
+    all_base = base_output()
+    data = [
+        {
+            "id": node.id,
+            "name": node.name,
+            "parent_id": node.parent_id,
+            "unit": node.unit,
+            "sort_order": node.sort_order,
+        }
+        for node in all_base
+    ]
+    return JsonResponse({"ok": True, "data": data})
+
+@require_http_methods(["GET"])
+def api_products(request):
+    all_products = base_product_output()
+    data = [
+        {
+            "id": product.id,
+            "name": product.name,
+            "sku": product.sku,
+            "price": product.price,
+            "supplier": product.supplier,
+            "weight_gram": product.weight_gram,
+            "classifier_node_id": product.classifier_node_id,
+        }
+        for product in all_products
+    ]
+    return JsonResponse({"ok": True, "data": data})
+
+@require_http_methods(["GET"])
+def api_product(request, product_id):
+    product_id = int(product_id)
+    product = get_object_or_404(Product, id=product_id)
+    data = _serialize_product(product)
+    return JsonResponse({"ok": True, "data": data})
+
+@require_http_methods(["DELETE"])
+def api_delete_category(request):
+    try:
+        payload = _parse_json(request)
+        category_id = int(payload.get("delete_id"))
+        search_delete_category(category_id)
+        return JsonResponse({"ok": True})
+    except (ValueError, KeyError) as e:
+        return _json_error(str(e))
+
+
+@require_http_methods(["DELETE"])
+def api_delete_product(request):
+    try:
+        payload = _parse_json(request)
+        product_id = int(payload.get("delete_id"))
+        search_delete_product(product_id)
+        return JsonResponse({"ok": True})
+    except (ValueError, KeyError) as e:
         return _json_error(str(e))

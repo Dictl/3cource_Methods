@@ -2,16 +2,13 @@ from core.models import ClassifierNode, Product
 
 
 def base_output():
-    all_base = ClassifierNode.objects.all()
-    return all_base
+    return list(ClassifierNode.objects.all())
 
 
 def base_product_output():
-    all_base_product = Product.objects.all()
-    return all_base_product
+    return list(Product.objects.all())
 
 
-#проверка на цикл, создаст ли перенос (move_category) цикл
 def would_create_cycle(all_base, node_id, new_parent_id):
     if new_parent_id is None:
         return False
@@ -19,17 +16,14 @@ def would_create_cycle(all_base, node_id, new_parent_id):
     node_id = int(node_id)
     new_parent_id = int(new_parent_id)
 
-    # перенос в самого себя
     if node_id == new_parent_id:
         return True
 
-    # перенос в своего потомка
     stack = [node_id]
     visited = set()
 
     while stack:
         current = stack.pop()
-
         if current in visited:
             continue
         visited.add(current)
@@ -43,10 +37,6 @@ def would_create_cycle(all_base, node_id, new_parent_id):
     return False
 
 
-"""
-Реализован через обход в глубину с добавлением еще одного параметра level
-(для корректного отображение древовидной структуры)
-"""
 def build_tree_with_levels(all_base, p_id=None, current_level=0):
     result_with_levels = []
 
@@ -54,54 +44,55 @@ def build_tree_with_levels(all_base, p_id=None, current_level=0):
         if element.parent_id == p_id:
             element.level = current_level
             result_with_levels.append(element)
-
             children = build_tree_with_levels(all_base, element.id, current_level + 1)
             result_with_levels.extend(children)
 
     return result_with_levels
 
 
-"""
-все тот же обход в глубину для !поиска всех дочерних вершин!, только для конкретной выбранной вершины
-"""
 def search_child_nodes(all_base, node_id):
-    result_children_id = []
+    result_children = []
 
     for element in all_base:
         if element.parent_id == node_id:
-            result_children_id.append(element)
-            children_id = search_child_nodes(all_base, element.id)
-            result_children_id.extend(children_id)
-    return result_children_id
+            result_children.append(element)
+            result_children.extend(search_child_nodes(all_base, element.id))
 
+    return result_children
 
-"""
-поиск всех товаров и поиск названия категории(для вывода в правой части). Но также используется и для поиска
-терминальных классов, т.к. частично тут реализуется
-"""
+def has_children(all_base, node_id):
+    for element in all_base:
+        if element.parent_id == node_id:
+            return True
+    return False
+
+def display_terminal_nodes(all_base, node_id):
+    # Ищет все терминальные узлы в поддереве (включая сам узел и его потомков)
+    terminal_nodes = []
+    for element in all_base:
+        if element.id == node_id or (element.parent_id == node_id and not has_children(all_base, element.id)):
+            terminal_nodes.append(element)
+
+    return terminal_nodes
+
 def display_parent_product(all_base, all_base_product, node_id):
-    result_product = []
     selected_category = None
+    result_product = []
 
     for element in all_base:
         if element.id == node_id:
             selected_category = element.name
+            break
+
+    child_ids = {child.id for child in search_child_nodes(all_base, node_id)} | {node_id}
 
     for product in all_base_product:
-        if product.classifier_node.id == node_id:
+        if product.classifier_node_id in child_ids:
             result_product.append(product)
-
-    for children in search_child_nodes(all_base, node_id):
-        for product in all_base_product:
-            if children.id == product.classifier_node.id:
-                result_product.append(product)
 
     return selected_category, result_product
 
 
-"""
-поиск всех родителей
-"""
 def search_parent_nodes(all_base, node_id):
     result_parents = []
     current_category = None
@@ -128,21 +119,14 @@ def add_category(name, parent_id, unit):
     if ClassifierNode.objects.filter(name=name).exists():
         raise ValueError(f"Категория с именем '{name}' уже существует")
 
-    # вычисление следующего id для обхода проблемы с sequence
-    last_all = ClassifierNode.objects.all().order_by('-id').first()
-    if last_all:
-        next_id = last_all.id + 1
-    else:
-        next_id = 1
+    if parent_id is not None:
+        if Product.objects.filter(classifier_node_id=parent_id).exists():
+            raise ValueError("Нельзя добавить подкатегорию к терминальному узлу, содержащему товары")
 
-    last_category = ClassifierNode.objects.filter(parent_id=parent_id).order_by('-sort_order').first()
-    if last_category:
-        next_sort_order = last_category.sort_order + 1
-    else:
-        next_sort_order = 0
+    last_sort = ClassifierNode.objects.filter(parent_id=parent_id).order_by('-sort_order').first()
+    next_sort_order = (last_sort.sort_order + 1) if last_sort else 0
 
     new_category = ClassifierNode(
-        id=next_id,
         name=name,
         parent_id=parent_id,
         unit=unit,
@@ -159,15 +143,10 @@ def add_product(name, category_id, sku, price, supplier, weight_gram):
     if sku and Product.objects.filter(sku=sku).exists():
         raise ValueError(f"Товар с SKU '{sku}' уже существует")
 
-    # вычисление следующего id для обхода проблемы с sequence
-    last_all = Product.objects.all().order_by('-id').first()
-    if last_all:
-        next_id = last_all.id + 1
-    else:
-        next_id = 1
+    if ClassifierNode.objects.filter(parent_id=category_id).exists():
+        raise ValueError("Нельзя добавить товар к нетерминальному узлу, содержащему подкатегории")
 
     new_product = Product(
-        id=next_id,
         name=name,
         classifier_node_id=category_id,
         sku=sku,
@@ -180,57 +159,60 @@ def add_product(name, category_id, sku, price, supplier, weight_gram):
 
 
 def search_delete_category(delete_id):
-    #проверка есть ли товары у категории
-    for product in base_product_output():
-        if product.classifier_node_id == int(delete_id):
-            raise ValueError("Нельзя удалить категорию, у которой есть товары. Сначала удалите товары")
+    delete_id = int(delete_id)
+    all_base = base_output()  # Все категории
 
-    parent_delete_category = None
-    category_to_delete = None
+    # Проверка на наличие товаров в самой категории
+    if Product.objects.filter(classifier_node_id=delete_id).exists():
+        raise ValueError("Нельзя удалить категорию, содержащую товары")
 
-    for element in base_output():
-        if element.id == int(delete_id):
-            parent_delete_category = element.parent_id
-            category_to_delete = element
-            break
+    # Получаем все потомки удаляемей категории
+    descendants = set()
+    stack = [delete_id]
+    while stack:
+        current_id = stack.pop()
+        descendants.add(current_id)
+        for node in all_base:
+            if node.parent_id == current_id:
+                stack.append(node.id)
 
-    for element in base_output():
-        if element.parent_id == int(delete_id):
-            element.parent_id = parent_delete_category
-            element.save()  # сохранение в БД
+    # Определяем терминальные узлы (без потомков)
+    terminal_node_ids = [node_id for node_id in descendants
+                         if not any(child.id == node_id for child in search_child_nodes(all_base, node_id))]
 
-    for product in base_product_output():
-        if product.classifier_node_id == int(delete_id):
-            product.classifier_node_id = parent_delete_category
-            product.save()
+    # Проверяем, что в терминальных узлах нет товаров
+    for node_id in terminal_node_ids:
+        if Product.objects.filter(classifier_node_id=node_id).exists():
+            raise ValueError(f"Нельзя удалить категорию, у которой есть терминальные узлы с товарами. Узел {node_id} содержит товары")
 
-    if category_to_delete:
-        category_to_delete.delete()
+    # Удаляем все потомки (начиная с самых глубоких)
+    for node_id in sorted(descendants, reverse=True):  # Сортируем в обратном порядке для правильного удаления
+        if node_id != delete_id:  # Не удаляем саму категорию
+            node = ClassifierNode.objects.get(id=node_id)
+            node.delete()
 
+    # Удаляем саму категорию
+    category = ClassifierNode.objects.get(id=delete_id)
+    category.delete()
 
 def search_delete_product(delete_id):
-    product_to_delete = None
+    delete_id = int(delete_id)
 
     for element in base_product_output():
-        if element.id == int(delete_id):
-            product_to_delete = element
-            break
+        if element.id == delete_id:
+            element.delete()
+            return
 
-    if product_to_delete:
-        product_to_delete.delete()
+    raise ValueError(f"Товар с id '{delete_id}' не найден")
 
 
-"""
-перемещение(смена родителя)
-"""
 def move_category(category_id, new_parent_id):
     category_id = int(category_id)
     if new_parent_id is not None:
         new_parent_id = int(new_parent_id)
 
-    all_nodes = list(base_output())
+    all_nodes = base_output()
 
-    # проверка цикла
     if would_create_cycle(all_nodes, category_id, new_parent_id):
         raise ValueError("Нельзя переместить вершину в саму себя или в своего потомка (цикл)")
 
@@ -238,65 +220,41 @@ def move_category(category_id, new_parent_id):
         if element.id == category_id:
             element.parent_id = new_parent_id
 
-            # новый sort_order относительно детей нового родителя
-            siblings = []
-            for e in all_nodes:
-                if e.parent_id == new_parent_id and e.id != category_id:
-                    siblings.append(e)
-
-            if siblings:
-                max_sort_order = max([s.sort_order for s in siblings])
-                element.sort_order = max_sort_order + 1
-            else:
-                element.sort_order = 0
-
+            siblings = [e for e in all_nodes if e.parent_id == new_parent_id and e.id != category_id]
+            element.sort_order = (max(s.sort_order for s in siblings) + 1) if siblings else 0
             element.save()
             break
 
 
 def reorder_category(category_id, target_position_id):
-    
+    category_id = int(category_id)
+    all_base = base_output()
+
     current = None
-    for e in base_output():
-        if e.id == int(category_id):
+    for e in all_base:
+        if e.id == category_id:
             current = e
             break
 
     if current is None:
-        return
+        raise ValueError(f"Категория с id '{category_id}' не найдена")
 
-    old_parent_id = current.parent_id
+    siblings = sorted(
+        [e for e in all_base if e.parent_id == current.parent_id and e.id != current.id],
+        key=lambda x: x.sort_order
+    )
 
-    # Собираем всех братьев (категории с тем же parent_id, исключая текущую)
-    siblings = []
-    for e in base_output():
-        if e.parent_id == old_parent_id and e.id != current.id:
-            siblings.append(e)
-
-    # Сортируем братьев по sort_order
-    siblings.sort(key=lambda x: x.sort_order)
-
-    # Создаём новый порядок
     if target_position_id is None or target_position_id == '':
-        # В начало
         new_order = [current] + siblings
     else:
         target_position_id = int(target_position_id)
-        # Находим позицию целевой категории
-        target_index = -1
-        for i, sib in enumerate(siblings):
-            if sib.id == target_position_id:
-                target_index = i
-                break
+        target_index = next((i for i, s in enumerate(siblings) if s.id == target_position_id), -1)
 
         if target_index == -1:
-            # Если целевая не найдена, ставим в конец
             new_order = siblings + [current]
         else:
-            # Вставляем после целевой
             new_order = siblings[:target_index + 1] + [current] + siblings[target_index + 1:]
 
-    # Обновляем sort_order для всех
     for index, cat in enumerate(new_order):
         cat.sort_order = index
         cat.save()

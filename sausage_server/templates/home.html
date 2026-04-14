@@ -172,17 +172,20 @@
     </div>
 
     <script>
-      window.apiUrls = {
+    window.apiUrls = {
         tree: '/api/tree/',
-        search: '/api/search/',
-        addCategory: '/api/category/add/',
-        addProduct: '/api/product/add/',
-        delete: '/api/delete/',
-        moveCategory: '/api/category/move/',
-        reorderCategory: '/api/category/reorder/'
-      };
+        addCategory: '/api/categories/add/',
+        addProduct: '/api/products/add/',
+        deleteCategory: '/api/categories/delete/',
+        deleteProduct: '/api/products/delete/',
+        moveCategory: '/api/categories/move/',
+        reorderCategory: '/api/categories/reorder/',
+        nodesMoveMetadata: '/api/categories/move-metadata/',
+        children: '/api/categories/',   // + category_id + '/children/'
+        parents: '/api/categories/',    // + category_id + '/parents/'
+        terminals: '/api/categories/',  // + category_id + '/terminals/'
+    };
     </script>
     <script src="{% static 'js/home.js' %}"></script>
 </body>
 </html>
-
