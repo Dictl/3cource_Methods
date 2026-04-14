@@ -1,3 +1,4 @@
+{% load static %}
 <!DOCTYPE html>
 <html>
 <head>
@@ -124,11 +125,11 @@
                                 <tbody>
                                 {% for product in terminal_products %}
                                     <tr>
-                                        <td>{{ product.name }}</a></td>
-                                        <td>{{ product.sku|default:"—" }}</a></td>
-                                        <td>{{ product.price }}</a></td>
-                                        <td>{{ product.supplier }}</a></td>
-                                        <td>{{ product.weight_gram }}</a></td>
+                                        <td>{{ product.name }}</td>
+                                        <td>{{ product.sku|default:"—" }}</td>
+                                        <td>{{ product.price }}</td>
+                                        <td>{{ product.supplier }}</td>
+                                        <td>{{ product.weight_gram }}</td>
                                         <td>
                                             <form method="POST" style="display: inline;">
                                                 {% csrf_token %}
@@ -136,7 +137,7 @@
                                                 <input type="hidden" name="delete_id" value="{{ product.id }}">
                                                 <button type="submit" onclick="return confirm('Удалить товар «{{ product.name }}»?')">🗑</button>
                                             </form>
-                                        </a>
+                                        </td>
                                     </tr>
                                 {% endfor %}
                                 </tbody>
@@ -165,11 +166,11 @@
                             <tbody>
                             {% for product in products %}
                                 <tr>
-                                    <td>{{ product.name }}</a></td>
-                                    <td>{{ product.sku|default:"—" }}</a></td>
-                                    <td>{{ product.price }}</a></td>
-                                    <td>{{ product.supplier }}</a></td>
-                                    <td>{{ product.weight_gram }}</a></td>
+                                    <td>{{ product.name }}</td>
+                                    <td>{{ product.sku|default:"—" }}</td>
+                                    <td>{{ product.price }}</td>
+                                    <td>{{ product.supplier }}</td>
+                                    <td>{{ product.weight_gram }}</td>
                                     <td>
                                         <form method="POST" style="display: inline;">
                                             {% csrf_token %}
@@ -181,7 +182,7 @@
                                 </tr>
                             {% endfor %}
                             </tbody>
-                        <tr>
+                        </table>
                     {% else %}
                         <p>В этой категории нет товаров</p>
                     {% endif %}
@@ -304,248 +305,16 @@
         </form>
     </div>
 
+    <!-- Данные для внешнего JS -->
     <script>
-        var nodesData = [
-            {% for node in nodes %}
-                {id: {{ node.id }}, name: "{{ node.name|escapejs }}", parent_id: {{ node.parent_id|default:'null' }}},
-            {% endfor %}
-        ];
-
-        var modal = document.getElementById('modal');
-        var moveModal = document.getElementById('moveModal');
-        var overlay = document.getElementById('overlay');
-        var openBtn = document.getElementById('openModalBtn');
-        var openMoveBtn = document.getElementById('openMoveModalBtn');
-        var cancelBtn = document.getElementById('cancelBtn');
-        var cancelMoveBtn = document.getElementById('cancelMoveBtn');
-        var typeCategory = document.getElementById('type_category');
-        var typeProduct = document.getElementById('type_product');
-        var productFields = document.getElementById('product_fields');
-        var unitField = document.getElementById('unit_field');
-
-        var moveTypeParent = document.getElementById('move_type_parent');
-        var moveTypeSibling = document.getElementById('move_type_sibling');
-        var targetParentDiv = document.getElementById('target_parent_div');
-        var targetPositionDiv = document.getElementById('target_position_div');
-        var moveNodeSelect = document.getElementById('move_node_id');
-        var targetPositionSelect = document.getElementById('target_position');
-        var newParentSelect = document.getElementById('new_parent_id');
-        var submitMoveBtn = document.getElementById('submitMoveBtn');
-
-        var searchPanel = document.getElementById('searchPanel');
-        var searchCategoryId = document.getElementById('search_category_id');
-        var searchCategoryTitle = document.getElementById('searchCategoryTitle');
-        var closeSearchBtn = document.getElementById('closeSearchPanel');
-        var searchBtns = document.querySelectorAll('.search-btn');
-
-        function openModalFunc() {
-            modal.style.display = 'block';
-            overlay.style.display = 'block';
-        }
-
-        function openMoveModalFunc() {
-            moveModal.style.display = 'block';
-            overlay.style.display = 'block';
-            updateTargetPositionOptions();
-            updateParentOptions();
-        }
-
-        function closeModalFunc() {
-            modal.style.display = 'none';
-            moveModal.style.display = 'none';
-            overlay.style.display = 'none';
-        }
-
-        function toggleFields() {
-            if (typeProduct.checked) {
-                productFields.style.display = 'block';
-                unitField.style.display = 'none';
-            } else {
-                productFields.style.display = 'none';
-                unitField.style.display = 'block';
-            }
-        }
-
-        function toggleMoveType() {
-            if (moveTypeParent.checked) {
-                targetParentDiv.style.display = 'block';
-                targetPositionDiv.style.display = 'none';
-            } else {
-                targetParentDiv.style.display = 'none';
-                targetPositionDiv.style.display = 'block';
-                updateTargetPositionOptions();
-            }
-        }
-
-        function updateParentOptions() {
-            var selectedNodeId = moveNodeSelect.value;
-
-            if (!selectedNodeId) {
-                return;
-            }
-
-            // Находим всех потомков выбранной вершины
-            var selectedIdNum = parseInt(selectedNodeId);
-            var descendantsIds = [];
-
-            function findDescendants(nodeId) {
-                for (var i = 0; i < nodesData.length; i++) {
-                    var parentId = nodesData[i].parent_id;
-                    if (parentId === nodeId || parentId === nodeId.toString()) {
-                        descendantsIds.push(nodesData[i].id);
-                        findDescendants(nodesData[i].id);
-                    }
-                }
-            }
-            findDescendants(selectedIdNum);
-
-            // Обновляем опции, блокируя саму вершину и её потомков
-            for (var i = 0; i < newParentSelect.options.length; i++) {
-                var option = newParentSelect.options[i];
-                var optionValue = parseInt(option.value);
-
-                // Блокируем саму вершину
-                if (optionValue === selectedIdNum) {
-                    option.style.color = 'red';
-                    option.style.fontStyle = 'italic';
-                    option.disabled = true;
-                    option.text = option.text.replace(/ ⚠️.*$/, '') + ' ⚠️ НЕЛЬЗЯ (это та же вершина)';
-                }
-                // Блокируем потомков
-                else if (descendantsIds.indexOf(optionValue) !== -1) {
-                    option.style.color = 'red';
-                    option.style.fontStyle = 'italic';
-                    option.disabled = true;
-                    option.text = option.text.replace(/ ⚠️.*$/, '') + ' ⚠️ НЕЛЬЗЯ (это потомок)';
-                }
-                else {
-                    option.style.color = '';
-                    option.style.fontStyle = '';
-                    option.disabled = false;
-                    option.text = option.text.replace(/ ⚠️.*$/, '');
-                }
-            }
-        }
-
-        function updateTargetPositionOptions() {
-            var selectedNodeId = parseInt(moveNodeSelect.value);
-            if (!selectedNodeId || isNaN(selectedNodeId)) {
-                targetPositionSelect.innerHTML = '<option value="">— Сначала выберите вершину —</option>';
-                return;
-            }
-
-            // Находим родителя выбранной вершины
-            var parentId = null;
-            for (var i = 0; i < nodesData.length; i++) {
-                if (nodesData[i].id === selectedNodeId) {
-                    parentId = nodesData[i].parent_id !== null && nodesData[i].parent_id !== 'null' ? parseInt(nodesData[i].parent_id) : null;
-                    break;
-                }
-            }
-
-            // Собираем всех братьев (категории с тем же parent_id, исключая выбранную)
-            var siblings = [];
-            for (var i = 0; i < nodesData.length; i++) {
-                var node = nodesData[i];
-                var nodeParentId = (node.parent_id !== null && node.parent_id !== 'null') ? parseInt(node.parent_id) : null;
-                if (node.id !== selectedNodeId && nodeParentId === parentId) {
-                    siblings.push(node);
-                }
-            }
-
-            var options = '<option value="">— В начало —</option>';
-            for (var i = 0; i < siblings.length; i++) {
-                options += '<option value="' + siblings[i].id + '">После ' + siblings[i].name + '</option>';
-            }
-            if (siblings.length === 0) {
-                options = '<option value="">— Нет других вершин на этом уровне —</option>';
-            }
-            targetPositionSelect.innerHTML = options;
-        }
-
-        function showSearchPanel(nodeId, nodeName) {
-            searchCategoryId.value = nodeId;
-            searchCategoryTitle.innerHTML = 'Поиск для категории "' + nodeName + '" (id=' + nodeId + ')';
-            searchPanel.classList.add('active');
-            document.querySelectorAll('#searchForm input[type="radio"]').forEach(function(radio) {
-                radio.checked = false;
-            });
-        }
-
-        function closeSearchPanel() {
-            searchPanel.classList.remove('active');
-        }
-
-        // Валидация перед отправкой
-        function validateMove() {
-            var selectedNodeId = parseInt(moveNodeSelect.value);
-            var newParentId = parseInt(newParentSelect.value);
-
-            if (selectedNodeId === newParentId) {
-                alert('Нельзя переместить вершину в саму себя!');
-                return false;
-            }
-
-            // Проверка на потомка
-            function isDescendant(parentId, childId) {
-                for (var i = 0; i < nodesData.length; i++) {
-                    if (nodesData[i].parent_id == parentId) {
-                        if (nodesData[i].id === childId) return true;
-                        if (isDescendant(nodesData[i].id, childId)) return true;
-                    }
-                }
-                return false;
-            }
-
-            if (isDescendant(selectedNodeId, newParentId)) {
-                alert('Нельзя переместить вершину в своего потомка!');
-                return false;
-            }
-
-            return true;
-        }
-
-        openBtn.onclick = openModalFunc;
-        openMoveBtn.onclick = openMoveModalFunc;
-        cancelBtn.onclick = closeModalFunc;
-        cancelMoveBtn.onclick = closeModalFunc;
-        overlay.onclick = closeModalFunc;
-
-        typeCategory.onclick = toggleFields;
-        typeProduct.onclick = toggleFields;
-
-        moveTypeParent.onclick = toggleMoveType;
-        moveTypeSibling.onclick = toggleMoveType;
-
-        moveNodeSelect.onchange = function() {
-            updateTargetPositionOptions();
-            updateParentOptions();
-        };
-
-        // Добавляем валидацию перед отправкой формы
-        if (submitMoveBtn) {
-            submitMoveBtn.onclick = function(e) {
-                if (!validateMove()) {
-                    e.preventDefault();
-                    return false;
-                }
-            };
-        }
-
-        searchBtns.forEach(function(btn) {
-            btn.onclick = function() {
-                var nodeId = this.getAttribute('data-node-id');
-                var nodeName = this.getAttribute('data-node-name');
-                showSearchPanel(nodeId, nodeName);
-            };
-        });
-
-        if (closeSearchBtn) {
-            closeSearchBtn.onclick = closeSearchPanel;
-        }
-
-        // Инициализация при загрузке
-        updateParentOptions();
+      window.nodesData = [
+        {% for node in nodes %}
+          {id: {{ node.id }}, name: "{{ node.name|escapejs }}", parent_id: {{ node.parent_id|default:'null' }}},
+        {% endfor %}
+      ];
     </script>
+
+    <!-- Внешний JS -->
+    <script src="{% static 'js/home.js' %}"></script>
 </body>
 </html>

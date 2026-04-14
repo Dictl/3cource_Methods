@@ -5,7 +5,7 @@ from .service import *
 
 def home(request):
     if request.method == 'POST':
-        # Добавлено: проверка на удаление
+        # проверка на удаление
         if 'delete_type' in request.POST:
             delete_type = request.POST.get('delete_type')
             delete_id = request.POST.get('delete_id')
@@ -20,7 +20,7 @@ def home(request):
 
             return redirect(request.path)
 
-        # Добавлено: проверка на перемещение вершины
+        # проверка на перемещение вершины
         if 'move_action' in request.POST:
             move_node_id = request.POST.get('move_node_id')
             move_type = request.POST.get('move_type')
@@ -86,7 +86,7 @@ def home(request):
         all_products = base_product_output()
         selected_category, products = display_parent_product(all_categories, all_products, node_id)
 
-    # Добавлено: обработка поиска
+    #обработка поиска
     search_category_id = request.GET.get('search_category_id')
     search_type = request.GET.get('search_type')
 
@@ -107,13 +107,10 @@ def home(request):
                 break
 
         if search_type == 'descendants':
-            # Поиск всех потомков
             descendants = search_child_nodes(all_cats, search_category_id)
         elif search_type == 'parents':
-            # Поиск всех родителей (вызов функции из service.py)
             parents = search_parent_nodes(all_cats, search_category_id)
         elif search_type == 'terminals':
-            # Поиск всех терминальных классов (товаров)
             all_descendants = search_child_nodes(all_cats, search_category_id)
             all_descendants.append(search_category)
             category_ids = [cat.id for cat in all_descendants]
