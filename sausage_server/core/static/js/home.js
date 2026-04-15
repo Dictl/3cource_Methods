@@ -454,7 +454,7 @@ function handleMoveSubmit(e) {
     }
 
     apiRequest(url, {
-        method: 'POST',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
     })

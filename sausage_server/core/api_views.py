@@ -171,7 +171,7 @@ def api_add_product(request):
         return _json_error(str(e))
 
 
-@require_http_methods(["POST"])
+@require_http_methods(["PUT"])
 def api_move_category(request):
     try:
         payload = _parse_json(request)
@@ -187,7 +187,7 @@ def api_move_category(request):
         return _json_error(str(e))
 
 
-@require_http_methods(["POST"])
+@require_http_methods(["PUT"])
 def api_reorder_category(request):
     try:
         payload = _parse_json(request)
