@@ -1,0 +1,191 @@
+{% load static %}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Классификатор</title>
+    <style>
+        .search-panel {
+            display: none;
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #ccc;
+            background-color: #f9f9f9;
+        }
+        .search-panel.active {
+            display: block;
+        }
+        .error-option {
+            color: red;
+            font-style: italic;
+        }
+        .toolbar {
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div id="messageBox"></div>
+
+    <table width="100%" border="0">
+        <tr>
+            <td width="30%" valign="top">
+                <div class="toolbar">
+                    <button id="openModalBtn">➕ Добавить вершину</button>
+                    <button id="openMoveModalBtn" style="margin-left: 10px;">✂️ Переместить вершину</button>
+                </div>
+                <h1>Дерево:</h1>
+                <div id="treeContainer">
+                    <p>Загрузка...</p>
+                </div>
+            </td>
+            <td width="70%" valign="top">
+                <h1>Содержимое:</h1>
+
+                <div id="searchPanel" class="search-panel">
+                    <h3 id="searchCategoryTitle">Поиск для категории</h3>
+                    <form id="searchForm">
+                        {% csrf_token %}
+                        <input type="hidden" name="search_category_id" id="search_category_id">
+                        <div>
+                            <input type="radio" id="search_descendants" name="search_type" value="descendants">
+                            <label for="search_descendants">Поиск всех потомков</label>
+                        </div>
+                        <div>
+                            <input type="radio" id="search_parents" name="search_type" value="parents">
+                            <label for="search_parents">Поиск всех родителей</label>
+                        </div>
+                        <div>
+                            <input type="radio" id="search_terminals" name="search_type" value="terminals">
+                            <label for="search_terminals">Поиск всех терминальных классов (товаров)</label>
+                        </div>
+                        <button type="submit">Выполнить поиск</button>
+                        <button type="button" id="closeSearchPanel">Закрыть</button>
+                    </form>
+                </div>
+
+                <div id="contentContainer">
+                    <p>Выберите категорию слева или нажмите 🔍 для поиска</p>
+                </div>
+            </td>
+        </tr>
+    </table>
+
+    <div id="overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.5); z-index: 999;"></div>
+
+    <div id="modal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: white; padding: 20px; border: 1px solid #ccc; z-index: 1000; min-width: 300px;">
+        <h3>Добавить новую вершину</h3>
+        <form id="addForm">
+            {% csrf_token %}
+
+            <div>
+                <label>Тип вершины:</label><br>
+                <input type="radio" id="type_category" name="node_type" value="category" checked>
+                <label for="type_category">Категория (промежуточная)</label><br>
+                <input type="radio" id="type_product" name="node_type" value="product">
+                <label for="type_product">Товар (терминальная)</label>
+            </div>
+
+            <div>
+                <label for="name">Название:</label><br>
+                <input type="text" id="name" name="name" required>
+            </div>
+
+            <div id="unit_field">
+                <label for="unit">Единица измерения (грамм, штука, кг и т.д.):</label><br>
+                <input type="text" id="unit" name="unit">
+            </div>
+
+            <div>
+                <label for="parent_id">Родительская категория:</label><br>
+                <select id="parent_id" name="parent_id">
+                    <option value="">— Корневая категория —</option>
+                </select>
+            </div>
+
+            <div id="product_fields" style="display: none;">
+                <div>
+                    <label for="sku">SKU:</label><br>
+                    <input type="text" id="sku" name="sku">
+                </div>
+                <div>
+                    <label for="price">Цена (руб):</label><br>
+                    <input type="number" id="price" name="price" step="1" min="0">
+                </div>
+                <div>
+                    <label for="supplier">Поставщик:</label><br>
+                    <input type="text" id="supplier" name="supplier">
+                </div>
+                <div>
+                    <label for="weight_gram">Вес (грамм):</label><br>
+                    <input type="number" id="weight_gram" name="weight_gram" step="1" min="0">
+                </div>
+            </div>
+
+            <div>
+                <button type="button" id="cancelBtn">Отмена</button>
+                <button type="submit">Добавить</button>
+            </div>
+        </form>
+    </div>
+
+    <div id="moveModal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: white; padding: 20px; border: 1px solid #ccc; z-index: 1000; min-width: 400px;">
+        <h3>Переместить вершину</h3>
+        <form id="moveForm">
+            {% csrf_token %}
+
+            <div>
+                <label for="move_node_id">Какую вершину перемещаем:</label><br>
+                <select id="move_node_id" name="move_node_id" required>
+                    <option value="">— Выберите вершину —</option>
+                </select>
+            </div>
+
+            <div style="margin-top: 15px;">
+                <label>Тип перемещения:</label><br>
+                <input type="radio" id="move_type_parent" name="move_type" value="change_parent" checked>
+                <label for="move_type_parent">Переместить к другой вершине (смена родителя)</label><br>
+                <input type="radio" id="move_type_sibling" name="move_type" value="reorder">
+                <label for="move_type_sibling">Изменить порядок среди братьев (на том же уровне)</label>
+            </div>
+
+            <div id="target_parent_div" style="margin-top: 15px;">
+                <label for="new_parent_id">Куда переместить (новая родительская вершина):</label><br>
+                <select id="new_parent_id" name="new_parent_id">
+                    <option value="">— Корневая категория —</option>
+                </select>
+                <small style="display: block; color: gray; margin-top: 5px;">Нельзя переместить в самого себя или в своего потомка</small>
+            </div>
+
+            <div id="target_position_div" style="display: none; margin-top: 15px;">
+                <label for="target_position">Переместить после вершины:</label><br>
+                <select id="target_position" name="target_position">
+                    <option value="">— В начало —</option>
+                </select>
+            </div>
+
+            <div style="margin-top: 20px;">
+                <button type="button" id="cancelMoveBtn">Отмена</button>
+                <button type="submit" id="submitMoveBtn">Переместить</button>
+            </div>
+        </form>
+    </div>
+
+    <script>
+    window.apiUrls = {
+        tree: '/api/tree/',
+        addCategory: '/api/categories/add/',
+        addProduct: '/api/products/add/',
+        deleteCategory: '/api/categories/delete/',
+        deleteProduct: '/api/products/delete/',
+        moveCategory: '/api/categories/move/',
+        reorderCategory: '/api/categories/reorder/',
+        nodesMoveMetadata: '/api/categories/move-metadata/',
+        children: '/api/categories/',   // + category_id + '/children/'
+        parents: '/api/categories/',    // + category_id + '/parents/'
+        terminals: '/api/categories/',  // + category_id + '/terminals/'
+    };
+    </script>
+    <script src="{% static 'js/home.js' %}"></script>
+</body>
+</html>
