@@ -29,6 +29,7 @@ from .service import (
     enum_definitions_for_class_tree,
     assign_enum_value_to_product,
     product_attribute_values_output,
+    get_product_enums,
 )
 
 
@@ -527,4 +528,29 @@ def api_product_attribute_values(request):
     return JsonResponse({
         "ok": True,
         "data": [_serialize_product_attribute_value(p) for p in pavs]
+    })
+
+@require_http_methods(["GET"])
+def api_product_enums(request, product_id):
+    try:
+        product = Product.objects.get(id=product_id)
+    except Product.DoesNotExist:
+        return JsonResponse({"ok": False, "error": "Product not found"}, status=404)
+
+    enums = get_product_enums(product.id)
+
+    seen = set()
+    enums_unique = []
+    for item in enums:
+        key = (item["enum_definition"]["id"], item["enum_value"]["id"])
+        if key not in seen:
+            seen.add(key)
+            enums_unique.append(item)
+
+    return JsonResponse({
+        "product": {
+            "id": product.id,
+            "name": product.name,
+        },
+        "enums": enums_unique
     })

@@ -30,4 +30,5 @@ urlpatterns = [
     path('enum-definitions/delete/', api_views.api_delete_enum_definition, name='api_delete_enum_definition'),
     path('product-attributes/', api_views.api_product_attribute_values, name='api_product_attribute_values'),
     path('product-attributes/assign/', api_views.api_assign_enum_value_to_product, name='api_assign_enum_value_to_product'),
+    path("product/<int:product_id>/enums/", api_views.api_product_enums, name="api_product_enums"),
 ]

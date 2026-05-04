@@ -453,4 +453,33 @@ def assign_enum_value_to_product(product_id, enum_value_id=None):
 def product_attribute_values_output():
     return list(ProductAttributeValue.objects.all())
 
+"вывод характеристик для товара"
+def get_product_enums(product_id):
+    pavs = (
+        ProductAttributeValue.objects
+        .filter(product_id=product_id)
+        .select_related('enum_value__enum_definition')
+        .order_by('enum_value__enum_definition__id', 'enum_value__sort_order')
+    )
+
+    result = []
+    for pav in pavs:
+        enum_val = pav.enum_value
+        enum_def = enum_val.enum_definition if enum_val else None
+        if enum_val and enum_def:
+            result.append({
+                'enum_definition': {
+                    'id': enum_def.id,
+                    'description': enum_def.description,
+                },
+                'enum_value': {
+                    'id': enum_val.id,
+                    'value_str': enum_val.value_str,
+                    'value_int': enum_val.value_int,
+                    'value_real': enum_val.value_real,
+                    'sort_order': enum_val.sort_order,
+                }
+            })
+    return result
+
 
