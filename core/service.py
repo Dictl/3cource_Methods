@@ -1,6 +1,6 @@
 from core.models import ClassifierNode, Product, EnumDefinition, EnumValue, ProductAttributeValue
 
-
+#######################классификатор###########################
 def base_output():
     return list(ClassifierNode.objects.all())
 
@@ -249,6 +249,8 @@ def reorder_category(category_id, target_position_id):
         cat.sort_order = index
         cat.save()
 
+#######################перечисления###########################
+
 "получение enum_value при выборе enum_definition"
 def get_enum_definition_with_values(enum_definition_id):
     try:
@@ -481,5 +483,12 @@ def get_product_enums(product_id):
                 }
             })
     return result
+
+def delete_product_attribute(product_id):
+    product_id = int(product_id)
+    elem = ProductAttributeValue.objects.filter(id=product_id).first()
+    if elem is None:
+        raise ValueError("Нет такого product_attribute")
+    elem.delete()
 
 

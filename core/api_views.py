@@ -30,6 +30,7 @@ from .service import (
     assign_enum_value_to_product,
     product_attribute_values_output,
     get_product_enums,
+    delete_product_attribute,
 )
 
 
@@ -554,3 +555,17 @@ def api_product_enums(request, product_id):
         },
         "enums": enums_unique
     })
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_product_attribute(request):
+    try:
+        payload = _parse_json(request)
+        product_id = payload.get("product_id")
+        if product_id in (None, ""):
+            return _json_error("product_id обязателен")
+
+        delete_product_attribute(int(product_id))
+        return JsonResponse({"ok": True, "data": {"deleted": int(product_id)}})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))

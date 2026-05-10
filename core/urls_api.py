@@ -1,6 +1,7 @@
 from django.urls import path
 from . import api_views
 
+#######################классификатор###########################
 urlpatterns = [
     path('tree/', api_views.api_tree, name='api_tree'),
     path('categories/', api_views.api_categories, name='api_categories'),
@@ -19,7 +20,7 @@ urlpatterns = [
     path('products/add/', api_views.api_add_product, name='api_add_product'),
     path('products/<int:product_id>/', api_views.api_product, name='api_product'),
 
-# enums
+###################################### enums##########################################
     path('enums/', api_views.api_enums_all, name='api_enums_all'),
     path('enums/<int:enum_definition_id>/', api_views.api_enum_definition, name='api_enum_definition'),
     path('enums/create/', api_views.api_create_enum_definition, name='api_create_enum_definition'),
@@ -31,4 +32,5 @@ urlpatterns = [
     path('product-attributes/', api_views.api_product_attribute_values, name='api_product_attribute_values'),
     path('product-attributes/assign/', api_views.api_assign_enum_value_to_product, name='api_assign_enum_value_to_product'),
     path("product/<int:product_id>/enums/", api_views.api_product_enums, name="api_product_enums"),
+    path("product-attributes/delete",api_views.api_delete_product_attribute, name ="api_delete_product_attribute"),
 ]
