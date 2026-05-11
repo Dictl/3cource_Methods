@@ -1,4 +1,14 @@
-from core.models import ClassifierNode, Product, EnumDefinition, EnumValue, ProductAttributeValue
+from core.models import (
+    ClassifierNode,
+    Product,
+    EnumDefinition,
+    EnumValue,
+    ProductAttributeValue,
+    UnitDimension,
+    Unit,
+    ProductParameterValue,
+    ParameterDefinition,
+)
 
 #######################классификатор###########################
 def base_output():
@@ -491,4 +501,7 @@ def delete_product_attribute(product_id):
         raise ValueError("Нет такого product_attribute")
     elem.delete()
 
+#######################справочник###########################
 
+def get_all_parameter_definition():
+    return list(ParameterDefinition.objects.all()) 

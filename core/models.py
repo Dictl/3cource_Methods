@@ -21,6 +21,7 @@ class ClassifierNode(models.Model):
         db_table = 'classifier_node'
 
 
+
 class EnumDefinition(models.Model):
     classifier_node = models.OneToOneField(ClassifierNode, models.DO_NOTHING)
     description = models.TextField(blank=True, null=True)
@@ -40,6 +41,18 @@ class EnumValue(models.Model):
     class Meta:
         managed = False
         db_table = 'enum_value'
+
+
+class ParameterDefinition(models.Model):
+    classifier_node = models.ForeignKey(ClassifierNode, models.DO_NOTHING)
+    name = models.CharField(max_length=128)
+    unit = models.ForeignKey('Unit', models.DO_NOTHING, blank=True, null=True)
+    value_type = models.CharField(max_length=8)
+    sort_order = models.IntegerField()
+
+    class Meta:
+        managed = False
+        db_table = 'parameter_definition'
 
 
 class Product(models.Model):
@@ -63,3 +76,36 @@ class ProductAttributeValue(models.Model):
     class Meta:
         managed = False
         db_table = 'product_attribute_value'
+
+
+class ProductParameterValue(models.Model):
+    product = models.ForeignKey(Product, models.DO_NOTHING)
+    parameter_definition = models.ForeignKey(ParameterDefinition, models.DO_NOTHING)
+    value_str = models.TextField(blank=True, null=True)
+    value_int = models.IntegerField(blank=True, null=True)
+    value_real = models.DecimalField(max_digits=12, decimal_places=4, blank=True, null=True)
+
+    class Meta:
+        managed = False
+        db_table = 'product_parameter_value'
+        unique_together = (('product', 'parameter_definition'),)
+
+
+class Unit(models.Model):
+    dimension = models.ForeignKey('UnitDimension', models.DO_NOTHING)
+    name = models.CharField(max_length=64)
+    symbol = models.CharField(unique=True, max_length=16)
+    to_base_factor = models.DecimalField(max_digits=20, decimal_places=8)
+    to_base_offset = models.DecimalField(max_digits=20, decimal_places=8)
+
+    class Meta:
+        managed = False
+        db_table = 'unit'
+
+
+class UnitDimension(models.Model):
+    name = models.CharField(unique=True, max_length=64)
+
+    class Meta:
+        managed = False
+        db_table = 'unit_dimension'
