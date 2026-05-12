@@ -8,8 +8,6 @@
 from django.db import models
 
 
-
-
 class ClassifierNode(models.Model):
     parent = models.ForeignKey('self', models.DO_NOTHING, blank=True, null=True)
     name = models.TextField(unique=True)
@@ -19,7 +17,6 @@ class ClassifierNode(models.Model):
     class Meta:
         managed = False
         db_table = 'classifier_node'
-
 
 
 class EnumDefinition(models.Model):
@@ -53,6 +50,17 @@ class ParameterDefinition(models.Model):
     class Meta:
         managed = False
         db_table = 'parameter_definition'
+        unique_together = (('classifier_node', 'name'),)
+
+
+class ParameterNumericConstraint(models.Model):
+    parameter_definition = models.OneToOneField(ParameterDefinition, models.DO_NOTHING, primary_key=True)
+    min_value = models.DecimalField(max_digits=20, decimal_places=6)
+    max_value = models.DecimalField(max_digits=20, decimal_places=6)
+
+    class Meta:
+        managed = False
+        db_table = 'parameter_numeric_constraint'
 
 
 class Product(models.Model):
@@ -84,6 +92,7 @@ class ProductParameterValue(models.Model):
     value_str = models.TextField(blank=True, null=True)
     value_int = models.IntegerField(blank=True, null=True)
     value_real = models.DecimalField(max_digits=12, decimal_places=4, blank=True, null=True)
+    value_enum = models.ForeignKey(EnumValue, models.DO_NOTHING, blank=True, null=True)
 
     class Meta:
         managed = False

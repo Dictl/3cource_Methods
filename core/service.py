@@ -9,6 +9,7 @@ from core.models import (
     ProductParameterValue,
     ParameterDefinition,
 )
+from django.db.models import Q
 
 #######################классификатор###########################
 def base_output():
@@ -193,6 +194,8 @@ def search_delete_category(delete_id):
             node = ClassifierNode.objects.get(id=node_id)
             node.delete()
 
+    ParameterDefinition.objects.filter(classifier_node_id=delete_id).delete()
+
     # Удаляем саму категорию
     category = ClassifierNode.objects.get(id=delete_id)
     category.delete()
@@ -200,10 +203,14 @@ def search_delete_category(delete_id):
 def search_delete_product(delete_id):
     delete_id = int(delete_id)
 
+    ProductParameterValue.objects.filter(product_id=delete_id).delete()
+
     for element in base_product_output():
         if element.id == delete_id:
             element.delete()
             return
+
+    raise ValueError(f"Товар с id '{delete_id}' не найден")
 
     raise ValueError(f"Товар с id '{delete_id}' не найден")
 
@@ -504,4 +511,384 @@ def delete_product_attribute(product_id):
 #######################справочник###########################
 
 def get_all_parameter_definition():
-    return list(ParameterDefinition.objects.all()) 
+    return list(ParameterDefinition.objects.all())
+
+def get_class_parameters_with_inheritance(classifier_node_id):
+    all_nodes = base_output()
+    parents = search_parent_nodes(all_nodes, classifier_node_id)
+    parents = list(reversed(parents))
+    node_ids = [p.id for p in parents] + [int(classifier_node_id)]
+
+    params = (
+        ParameterDefinition.objects
+        .filter(classifier_node_id__in=node_ids)
+        .select_related("unit")
+        .order_by("classifier_node_id", "sort_order")
+    )
+
+    merged = {}
+    for p in params:
+        merged[p.name] = p
+
+    return list(merged.values())
+
+def delete_unit_dimension(unit_dimension_id):
+    unit_dimension_id = int(unit_dimension_id)
+
+    if Unit.objects.filter(dimension_id=unit_dimension_id).exists():
+        raise ValueError("Нельзя удалить unit_dimension: есть связанные unit")
+
+    ud = UnitDimension.objects.filter(id=unit_dimension_id).first()
+    if ud is None:
+        raise ValueError("Нет такой unit_dimension")
+    ud.delete()
+
+def create_unit_dimension(name):
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Имя не может быть пустым")
+
+    if UnitDimension.objects.filter(name__iexact=name).exists():
+        raise ValueError("Такая unit_dimension уже существует")
+
+    last = UnitDimension.objects.order_by("-id").first()
+    new_id = (last.id + 1) if last else 1
+
+    ud = UnitDimension(id=new_id, name=name)
+    ud.save(force_insert=True)
+    return ud
+
+def delete_unit(unit_id):
+    unit_id = int(unit_id)
+
+    if ParameterDefinition.objects.filter(unit_id=unit_id).exists():
+        raise ValueError("Нельзя удалить unit: он используется в parameter_definition")
+
+    unit = Unit.objects.filter(id=unit_id).first()
+    if unit is None:
+        raise ValueError("Нет такой unit")
+    unit.delete()
+
+def create_unit(dimension_id, name, symbol, to_base_factor=1, to_base_offset=0):
+    name = (name or "").strip()
+    symbol = (symbol or "").strip()
+
+    if not name:
+        raise ValueError("Имя не может быть пустым")
+    if not symbol:
+        raise ValueError("Символ не может быть пустым")
+
+    if not UnitDimension.objects.filter(id=dimension_id).exists():
+        raise ValueError("Нет такой unit_dimension")
+
+    if Unit.objects.filter(symbol__iexact=symbol).exists():
+        raise ValueError("Unit с таким символом уже существует")
+
+    # если хочешь запретить одинаковые имена:
+    if Unit.objects.filter(name__iexact=name).exists():
+        raise ValueError("Unit с таким именем уже существует")
+
+    last = Unit.objects.order_by("-id").first()
+    new_id = (last.id + 1) if last else 1
+
+    unit = Unit(
+        id=new_id,
+        dimension_id=dimension_id,
+        name=name,
+        symbol=symbol,
+        to_base_factor=to_base_factor,
+        to_base_offset=to_base_offset,
+    )
+    unit.save(force_insert=True)
+    return unit
+
+def create_parameter_definition(classifier_node_id, name, unit_id, value_type, sort_order=0):
+    classifier_node_id = int(classifier_node_id)
+    name = (name or "").strip()
+    value_type = (value_type or "").strip()
+
+    if not name:
+        raise ValueError("Имя не может быть пустым")
+    if value_type not in ("str", "int", "real"):
+        raise ValueError("value_type должен быть: str, int или real")
+
+    if not ClassifierNode.objects.filter(id=classifier_node_id).exists():
+        raise ValueError("Нет такого classifier_node")
+
+    if unit_id is None:
+        raise ValueError("unit_id обязателен")
+    if not Unit.objects.filter(id=unit_id).exists():
+        raise ValueError("Нет такого unit")
+
+    if ParameterDefinition.objects.filter(
+        classifier_node_id=classifier_node_id,
+        name__iexact=name
+    ).exists():
+        raise ValueError("Такой параметр уже есть в этом классе")
+
+    last = ParameterDefinition.objects.order_by("-id").first()
+    new_id = (last.id + 1) if last else 1
+
+    pd = ParameterDefinition(
+        id=new_id,
+        classifier_node_id=classifier_node_id,
+        name=name,
+        unit_id=unit_id,
+        value_type=value_type,
+        sort_order=sort_order,
+    )
+    pd.save(force_insert=True)
+    return pd
+
+def delete_parameter_definition(parameter_definition_id):
+    parameter_definition_id = int(parameter_definition_id)
+
+    if ProductParameterValue.objects.filter(parameter_definition_id=parameter_definition_id).exists():
+        raise ValueError("Нельзя удалить параметр: он используется в product_parameter_value")
+
+    pd = ParameterDefinition.objects.filter(id=parameter_definition_id).first()
+    if pd is None:
+        raise ValueError("Нет такого parameter_definition")
+    pd.delete()
+
+def create_product_parameter_value(product_id, parameter_definition_id,
+                                   value_str=None, value_int=None, value_real=None):
+    product_id = int(product_id)
+    parameter_definition_id = int(parameter_definition_id)
+
+    if not Product.objects.filter(id=product_id).exists():
+        raise ValueError("Нет такого product")
+
+    pd = ParameterDefinition.objects.filter(id=parameter_definition_id).first()
+    if pd is None:
+        raise ValueError("Нет такого parameter_definition")
+
+    if value_str is None and value_int is None and value_real is None:
+        raise ValueError("Нужно передать хотя бы одно значение")
+
+    if pd.value_type == "str" and value_str is None:
+        raise ValueError("Для value_type='str' нужно value_str")
+    if pd.value_type == "int" and value_int is None:
+        raise ValueError("Для value_type='int' нужно value_int")
+    if pd.value_type == "real" and value_real is None:
+        raise ValueError("Для value_type='real' нужно value_real")
+
+    if ProductParameterValue.objects.filter(
+        product_id=product_id,
+        parameter_definition_id=parameter_definition_id
+    ).exists():
+        raise ValueError("Значение для этого параметра у продукта уже существует")
+
+    last = ProductParameterValue.objects.order_by("-id").first()
+    new_id = (last.id + 1) if last else 1
+
+    ppv = ProductParameterValue(
+        id=new_id,
+        product_id=product_id,
+        parameter_definition_id=parameter_definition_id,
+        value_str=value_str,
+        value_int=value_int,
+        value_real=value_real,
+    )
+    ppv.save(force_insert=True)
+    return ppv
+
+def delete_product_parameter_value(product_parameter_value_id):
+    product_parameter_value_id = int(product_parameter_value_id)
+    ppv = ProductParameterValue.objects.filter(id=product_parameter_value_id).first()
+    if ppv is None:
+        raise ValueError("Нет такого product_parameter_value")
+    ppv.delete()
+
+def update_parameter_definition(parameter_definition_id, name=None, unit_id=None, value_type=None, sort_order=None):
+    parameter_definition_id = int(parameter_definition_id)
+
+    pd = ParameterDefinition.objects.filter(id=parameter_definition_id).first()
+    if pd is None:
+        raise ValueError("Нет такого parameter_definition")
+
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise ValueError("Имя не может быть пустым")
+        # проверка на дубль в том же классе
+        if ParameterDefinition.objects.filter(
+            classifier_node_id=pd.classifier_node_id,
+            name__iexact=name
+        ).exclude(id=pd.id).exists():
+            raise ValueError("Такой параметр уже есть в этом классе")
+        pd.name = name
+
+    if unit_id is not None:
+        if not Unit.objects.filter(id=unit_id).exists():
+            raise ValueError("Нет такого unit")
+        pd.unit_id = int(unit_id)
+
+    if value_type is not None:
+        value_type = value_type.strip()
+        if value_type not in ("str", "int", "real"):
+            raise ValueError("value_type должен быть: str, int или real")
+        pd.value_type = value_type
+
+    if sort_order is not None:
+        pd.sort_order = int(sort_order)
+
+    pd.save()
+    return pd
+
+def update_product_parameter_value(product_parameter_value_id,
+                                   value_str=None, value_int=None, value_real=None):
+    product_parameter_value_id = int(product_parameter_value_id)
+
+    ppv = ProductParameterValue.objects.filter(id=product_parameter_value_id).first()
+    if ppv is None:
+        raise ValueError("Нет такого product_parameter_value")
+
+    pd = ParameterDefinition.objects.filter(id=ppv.parameter_definition_id).first()
+    if pd is None:
+        raise ValueError("Нет такого parameter_definition")
+
+    if value_str is None and value_int is None and value_real is None:
+        raise ValueError("Нужно передать хотя бы одно значение")
+
+    if pd.value_type == "str":
+        if value_str is None:
+            raise ValueError("Для value_type='str' нужно value_str")
+        ppv.value_str = value_str
+        ppv.value_int = None
+        ppv.value_real = None
+
+    elif pd.value_type == "int":
+        if value_int is None:
+            raise ValueError("Для value_type='int' нужно value_int")
+        ppv.value_int = value_int
+        ppv.value_str = None
+        ppv.value_real = None
+
+    elif pd.value_type == "real":
+        if value_real is None:
+            raise ValueError("Для value_type='real' нужно value_real")
+        ppv.value_real = value_real
+        ppv.value_str = None
+        ppv.value_int = None
+
+    ppv.save()
+    return ppv
+
+def find_products_with_params_and_attrs(classifier_node_id):
+    classifier_node_id = int(classifier_node_id)
+
+    all_nodes = base_output()
+    descendants = search_child_nodes(all_nodes, classifier_node_id)
+    node_ids = [classifier_node_id] + [n.id for n in descendants]
+
+    products = (
+        Product.objects
+        .filter(classifier_node_id__in=node_ids)
+        .order_by("id")
+    )
+
+    ppv = (
+        ProductParameterValue.objects
+        .filter(product_id__in=[p.id for p in products])
+        .select_related("parameter_definition__unit")
+    )
+
+    pav = (
+        ProductAttributeValue.objects
+        .filter(product_id__in=[p.id for p in products])
+        .select_related("enum_value__enum_definition")
+    )
+
+    params_by_product = {}
+    for item in ppv:
+        params_by_product.setdefault(item.product_id, []).append(item)
+
+    attrs_by_product = {}
+    for item in pav:
+        attrs_by_product.setdefault(item.product_id, []).append(item)
+
+    result = []
+    for p in products:
+        product_params = []
+        for item in params_by_product.get(p.id, []):
+            pd = item.parameter_definition
+            product_params.append({
+                "parameter_definition": {
+                    "id": pd.id,
+                    "name": pd.name,
+                    "value_type": pd.value_type,
+                    "unit": {
+                        "id": pd.unit_id,
+                        "name": pd.unit.name if pd.unit else None,
+                        "symbol": pd.unit.symbol if pd.unit else None,
+                    }
+                },
+                "value_str": item.value_str,
+                "value_int": item.value_int,
+                "value_real": item.value_real,
+            })
+
+        product_attrs = []
+        for item in attrs_by_product.get(p.id, []):
+            ev = item.enum_value
+            ed = ev.enum_definition if ev else None
+            if ev and ed:
+                product_attrs.append({
+                    "enum_definition": {
+                        "id": ed.id,
+                        "description": ed.description,
+                    },
+                    "enum_value": {
+                        "id": ev.id,
+                        "value_str": ev.value_str,
+                        "value_int": ev.value_int,
+                        "value_real": ev.value_real,
+                        "sort_order": ev.sort_order,
+                    }
+                })
+
+        result.append({
+            "product": p,
+            "parameters": product_params,
+            "attributes": product_attrs,
+        })
+
+    return result
+
+
+def filter_products_by_parameters(classifier_node_id, filters):
+
+    classifier_node_id = int(classifier_node_id)
+
+    all_nodes = base_output()
+    descendants = search_child_nodes(all_nodes, classifier_node_id)
+    node_ids = [classifier_node_id] + [n.id for n in descendants]
+
+    products = Product.objects.filter(classifier_node_id__in=node_ids)
+    product_ids = set(products.values_list("id", flat=True))
+
+    for f in filters:
+        pd_id = int(f.get("parameter_definition_id"))
+        q = Q(parameter_definition_id=pd_id)
+
+        if "value_str" in f:
+            q &= Q(value_str=f["value_str"])
+        elif "value_int" in f:
+            q &= Q(value_int=f["value_int"])
+        elif "value_real" in f:
+            q &= Q(value_real=f["value_real"])
+        else:
+            raise ValueError("В фильтре нет значения")
+
+        matched_ids = set(
+            ProductParameterValue.objects
+            .filter(q)
+            .values_list("product_id", flat=True)
+        )
+        product_ids &= matched_ids
+
+        if not product_ids:
+            break
+
+    return list(Product.objects.filter(id__in=product_ids))

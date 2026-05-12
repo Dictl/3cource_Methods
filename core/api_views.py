@@ -2,7 +2,12 @@ import json
 from django.shortcuts import get_object_or_404
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
-from core.models import ClassifierNode, Product, EnumDefinition, EnumValue, ProductAttributeValue
+from core.models import (
+    ClassifierNode, Product, EnumDefinition, EnumValue, ProductAttributeValue,
+    ParameterDefinition, ProductParameterValue, ParameterNumericConstraint,
+    Unit, UnitDimension
+)
+from django.db import connection
 from django.views.decorators.csrf import csrf_exempt
 
 from .service import (
@@ -31,6 +36,20 @@ from .service import (
     product_attribute_values_output,
     get_product_enums,
     delete_product_attribute,
+    get_all_parameter_definition,
+    get_class_parameters_with_inheritance,
+    create_unit_dimension,
+    delete_unit_dimension,
+    create_unit,
+    delete_unit,
+    create_parameter_definition,
+    delete_parameter_definition,
+    update_parameter_definition,
+    create_product_parameter_value,
+    update_product_parameter_value,
+    delete_product_parameter_value,
+    find_products_with_params_and_attrs,
+    filter_products_by_parameters,
 )
 
 
@@ -79,6 +98,40 @@ def _serialize_product_attribute_value(pav):
         "id": pav.id,
         "product_id": pav.product_id,
         "enum_value_id": pav.enum_value_id,
+    }
+
+def _serialize_unit_dimension(ud):
+    return {"id": ud.id, "name": ud.name}
+
+def _serialize_unit(u):
+    return {
+        "id": u.id,
+        "dimension_id": u.dimension_id,
+        "name": u.name,
+        "symbol": u.symbol,
+        "to_base_factor": u.to_base_factor,
+        "to_base_offset": u.to_base_offset,
+    }
+
+def _serialize_parameter_definition(pd):
+    return {
+        "id": pd.id,
+        "classifier_node_id": pd.classifier_node_id,
+        "name": pd.name,
+        "unit_id": pd.unit_id,
+        "value_type": pd.value_type,
+        "sort_order": pd.sort_order,
+    }
+
+def _serialize_product_parameter_value(ppv):
+    return {
+        "id": ppv.id,
+        "product_id": ppv.product_id,
+        "parameter_definition_id": ppv.parameter_definition_id,
+        "value_str": ppv.value_str,
+        "value_int": ppv.value_int,
+        "value_real": float(ppv.value_real) if ppv.value_real is not None else None,
+        "value_enum_id": ppv.value_enum_id,
     }
 
 @require_http_methods(["GET"])
@@ -568,4 +621,441 @@ def api_delete_product_attribute(request):
         delete_product_attribute(int(product_id))
         return JsonResponse({"ok": True, "data": {"deleted": int(product_id)}})
     except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+
+@require_http_methods(["GET"])
+def api_parameters(request):
+    params = get_all_parameter_definition()
+    return JsonResponse({"ok": True, "data": [_serialize_parameter_definition(p) for p in params]})
+
+@require_http_methods(["GET"])
+def api_parameters_for_category(request, category_id):
+    params = get_class_parameters_with_inheritance(category_id)
+    return JsonResponse({"ok": True, "data": [_serialize_parameter_definition(p) for p in params]})
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_parameter(request):
+    try:
+        payload = _parse_json(request)
+        pd = create_parameter_definition(
+            classifier_node_id=payload.get("classifier_node_id"),
+            name=payload.get("name"),
+            unit_id=payload.get("unit_id"),
+            value_type=payload.get("value_type"),
+            sort_order=payload.get("sort_order", 0),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_parameter_definition(pd)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_parameter(request):
+    try:
+        payload = _parse_json(request)
+        pd = update_parameter_definition(
+            parameter_definition_id=payload.get("parameter_definition_id"),
+            name=payload.get("name"),
+            unit_id=payload.get("unit_id"),
+            value_type=payload.get("value_type"),
+            sort_order=payload.get("sort_order"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_parameter_definition(pd)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_parameter(request):
+    try:
+        payload = _parse_json(request)
+        delete_parameter_definition(payload.get("parameter_definition_id"))
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_unit_dimension(request):
+    try:
+        payload = _parse_json(request)
+        ud = create_unit_dimension(payload.get("name"))
+        return JsonResponse({"ok": True, "data": _serialize_unit_dimension(ud)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_unit_dimension(request):
+    try:
+        payload = _parse_json(request)
+        delete_unit_dimension(payload.get("unit_dimension_id"))
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_unit(request):
+    try:
+        payload = _parse_json(request)
+        unit = create_unit(
+            dimension_id=payload.get("dimension_id"),
+            name=payload.get("name"),
+            symbol=payload.get("symbol"),
+            to_base_factor=payload.get("to_base_factor", 1),
+            to_base_offset=payload.get("to_base_offset", 0),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_unit(unit)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_unit(request):
+    try:
+        payload = _parse_json(request)
+        delete_unit(payload.get("unit_id"))
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_product_parameter_value(request):
+    try:
+        payload = _parse_json(request)
+
+        value_int = payload.get("value_int")
+        value_real = payload.get("value_real")
+        if value_int in ("", None):
+            value_int = None
+        else:
+            value_int = int(value_int)
+        if value_real in ("", None):
+            value_real = None
+        else:
+            value_real = float(value_real)
+
+        ppv = create_product_parameter_value(
+            product_id=payload.get("product_id"),
+            parameter_definition_id=payload.get("parameter_definition_id"),
+            value_str=payload.get("value_str"),
+            value_int=value_int,
+            value_real=value_real,
+        )
+        return JsonResponse({"ok": True, "data": _serialize_product_parameter_value(ppv)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_product_parameter_value(request):
+    try:
+        payload = _parse_json(request)
+
+        value_int = payload.get("value_int")
+        value_real = payload.get("value_real")
+        if value_int in ("", None):
+            value_int = None
+        else:
+            value_int = int(value_int)
+        if value_real in ("", None):
+            value_real = None
+        else:
+            value_real = float(value_real)
+
+        ppv = update_product_parameter_value(
+            product_parameter_value_id=payload.get("product_parameter_value_id"),
+            value_str=payload.get("value_str"),
+            value_int=value_int,
+            value_real=value_real,
+        )
+        return JsonResponse({"ok": True, "data": _serialize_product_parameter_value(ppv)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_product_parameter_value(request):
+    try:
+        payload = _parse_json(request)
+        delete_product_parameter_value(payload.get("product_parameter_value_id"))
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@require_http_methods(["GET"])
+def api_products_with_params(request, classifier_node_id):
+    result = find_products_with_params_and_attrs(classifier_node_id)
+    data = []
+    for item in result:
+        data.append({
+            "product": _serialize_product(item["product"]),
+            "parameters": item["parameters"],
+            "attributes": item["attributes"],
+        })
+    return JsonResponse({"ok": True, "data": data})
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_filter_products_by_params(request, classifier_node_id):
+    try:
+        payload = _parse_json(request)
+        filters = payload.get("filters", [])
+        products = filter_products_by_parameters(classifier_node_id, filters)
+        return JsonResponse({"ok": True, "data": [_serialize_product(p) for p in products]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ========== ОГРАНИЧЕНИЯ ДЛЯ ЧИСЛОВЫХ ПАРАМЕТРОВ ==========
+
+@require_http_methods(["POST"])
+@csrf_exempt
+def api_get_parameter_constraint(request):
+    """
+    Получить ограничение для параметра (min/max).
+    Ожидает JSON: {"parameter_definition_id": 123}
+    """
+    try:
+        payload = _parse_json(request)
+        param_def_id = payload.get("parameter_definition_id")
+        if not param_def_id:
+            return _json_error("parameter_definition_id обязателен")
+
+        # Проверка, что параметр числовой (опционально)
+        try:
+            pd = ParameterDefinition.objects.get(id=param_def_id)
+            if pd.value_type not in ('int', 'real'):
+                return _json_error("Ограничения можно задавать только для числовых параметров")
+        except ParameterDefinition.DoesNotExist:
+            return _json_error("Параметр не найден", 404)
+
+        c = ParameterNumericConstraint.objects.get(parameter_definition_id=param_def_id)
+        return JsonResponse({
+            "ok": True,
+            "data": {
+                "min_value": float(c.min_value),
+                "max_value": float(c.max_value)
+            }
+        })
+    except ParameterNumericConstraint.DoesNotExist:
+        return JsonResponse({"ok": True, "data": None})
+    except Exception as e:
+        return _json_error(str(e))
+
+
+@require_http_methods(["POST"])
+@csrf_exempt
+def api_create_parameter_constraint(request):
+    """
+    Создать ограничение для параметра.
+    Ожидает JSON:
+    {
+        "parameter_definition_id": 123,
+        "min_value": 10.5,
+        "max_value": 100.0
+    }
+    """
+    try:
+        payload = _parse_json(request)
+        param_def_id = payload.get("parameter_definition_id")
+        min_val = payload.get("min_value")
+        max_val = payload.get("max_value")
+
+        if not param_def_id:
+            return _json_error("parameter_definition_id обязателен")
+        if min_val is None or max_val is None:
+            return _json_error("Необходимы min_value и max_value")
+
+        # Проверка существования параметра и его типа
+        try:
+            pd = ParameterDefinition.objects.get(id=param_def_id)
+            if pd.value_type not in ('int', 'real'):
+                return _json_error("Ограничения можно задавать только для числовых параметров")
+        except ParameterDefinition.DoesNotExist:
+            return _json_error("Параметр не найден", 404)
+
+        min_val = float(min_val)
+        max_val = float(max_val)
+        if min_val > max_val:
+            return _json_error("min_value не может быть больше max_value")
+
+        # Проверяем, нет ли уже ограничения (чтобы случайно не перезаписать)
+        if ParameterNumericConstraint.objects.filter(parameter_definition_id=param_def_id).exists():
+            return _json_error("Ограничение уже существует. Используйте обновление.")
+
+        c = ParameterNumericConstraint.objects.create(
+            parameter_definition_id=param_def_id,
+            min_value=min_val,
+            max_value=max_val
+        )
+        return JsonResponse({
+            "ok": True,
+            "data": {
+                "min_value": float(c.min_value),
+                "max_value": float(c.max_value)
+            }
+        })
+    except Exception as e:
+        return _json_error(str(e))
+
+
+@require_http_methods(["POST"])
+@csrf_exempt
+def api_update_parameter_constraint(request):
+    """
+    Обновить существующее ограничение для параметра.
+    Ожидает JSON:
+    {
+        "parameter_definition_id": 123,
+        "min_value": 10.5,
+        "max_value": 100.0
+    }
+    """
+    try:
+        payload = _parse_json(request)
+        param_def_id = payload.get("parameter_definition_id")
+        min_val = payload.get("min_value")
+        max_val = payload.get("max_value")
+
+        if not param_def_id:
+            return _json_error("parameter_definition_id обязателен")
+        if min_val is None or max_val is None:
+            return _json_error("Необходимы min_value и max_value")
+
+        min_val = float(min_val)
+        max_val = float(max_val)
+        if min_val > max_val:
+            return _json_error("min_value не может быть больше max_value")
+
+        c = ParameterNumericConstraint.objects.get(parameter_definition_id=param_def_id)
+        c.min_value = min_val
+        c.max_value = max_val
+        c.save()
+
+        return JsonResponse({
+            "ok": True,
+            "data": {
+                "min_value": float(c.min_value),
+                "max_value": float(c.max_value)
+            }
+        })
+    except ParameterNumericConstraint.DoesNotExist:
+        return _json_error("Ограничение не найдено", 404)
+    except Exception as e:
+        return _json_error(str(e))
+
+
+@require_http_methods(["POST"])
+@csrf_exempt
+def api_delete_parameter_constraint(request):
+    """
+    Удалить ограничение для параметра.
+    Ожидает JSON: {"parameter_definition_id": 123}
+    """
+    try:
+        payload = _parse_json(request)
+        param_def_id = payload.get("parameter_definition_id")
+        if not param_def_id:
+            return _json_error("parameter_definition_id обязателен")
+
+        c = ParameterNumericConstraint.objects.get(parameter_definition_id=param_def_id)
+        c.delete()
+        return JsonResponse({"ok": True, "message": "Ограничение удалено"})
+    except ParameterNumericConstraint.DoesNotExist:
+        return JsonResponse({"ok": True, "message": "Ограничение не существовало"})
+    except Exception as e:
+        return _json_error(str(e))
+
+@require_http_methods(["DELETE"])
+@csrf_exempt
+def api_delete_parameter_constraint(request, param_def_id):
+    try:
+        c = ParameterNumericConstraint.objects.get(parameter_definition_id=param_def_id)
+        c.delete()
+        return JsonResponse({"ok": True, "message": "Ограничение удалено"})
+    except ParameterNumericConstraint.DoesNotExist:
+        return JsonResponse({"ok": True, "message": "Ограничение не существовало"})
+
+# ========== ЧТЕНИЕ ЗНАЧЕНИЙ ПАРАМЕТРОВ ПРОДУКТОВ ==========
+
+@require_http_methods(["GET"])
+def api_product_parameter_values(request, product_id):
+    """Возвращает все значения параметров для данного продукта."""
+    ppvs = ProductParameterValue.objects.filter(product_id=product_id).select_related('parameter_definition')
+    data = [_serialize_product_parameter_value(p) for p in ppvs]
+    return JsonResponse({"ok": True, "data": data})
+
+@require_http_methods(["GET"])
+def api_get_parameter_value(request, product_id, param_def_id):
+    """Возвращает значение конкретного параметра для продукта (или null)."""
+    try:
+        ppv = ProductParameterValue.objects.get(product_id=product_id, parameter_definition_id=param_def_id)
+        return JsonResponse({"ok": True, "data": _serialize_product_parameter_value(ppv)})
+    except ProductParameterValue.DoesNotExist:
+        return JsonResponse({"ok": True, "data": None})
+
+# ========== АГРЕГАТЫ ПАРАМЕТРОВ ==========
+
+@require_http_methods(["GET"])
+def api_parameter_aggregates(request):
+    """
+    Возвращает агрегаты из материализованного представления mv_parameter_aggregates.
+    Можно фильтровать по category_id (classifier_node_id) через параметр ?category_id=...
+    """
+    category_id = request.GET.get("category_id")
+    try:
+        with connection.cursor() as cursor:
+            sql = """
+                SELECT
+                    classifier_node_id,
+                    parameter_definition_id,
+                    param_name,
+                    value_type,
+                    total_products,
+                    filled_count,
+                    avg_numeric,
+                    min_numeric,
+                    max_numeric,
+                    sum_numeric
+                FROM mv_parameter_aggregates
+            """
+            params = []
+            if category_id:
+                sql += " WHERE classifier_node_id = %s"
+                params.append(int(category_id))
+            sql += " ORDER BY classifier_node_id, param_name"
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+        data = [
+            {
+                "category_id": r[0],
+                "parameter_definition_id": r[1],
+                "param_name": r[2],
+                "value_type": r[3],
+                "total_products": r[4],
+                "filled_count": r[5],
+                "avg_numeric": float(r[6]) if r[6] is not None else None,
+                "min_numeric": float(r[7]) if r[7] is not None else None,
+                "max_numeric": float(r[8]) if r[8] is not None else None,
+                "sum_numeric": float(r[9]) if r[9] is not None else None,
+            }
+            for r in rows
+        ]
+        return JsonResponse({"ok": True, "data": data})
+    except Exception as e:
+        return _json_error(str(e))
+
+@require_http_methods(["POST"])
+@csrf_exempt
+def api_refresh_aggregates(request):
+    """Обновляет материализованное представление агрегатов."""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_parameter_aggregates")
+        return JsonResponse({"ok": True, "message": "Агрегаты обновлены"})
+    except Exception as e:
         return _json_error(str(e))
