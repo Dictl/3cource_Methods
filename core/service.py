@@ -651,27 +651,29 @@ def delete_parameter_definition(parameter_definition_id):
         raise ValueError("Нет такого parameter_definition")
     pd.delete()
 
-def create_product_parameter_value(product_id, parameter_definition_id,
-                                   value_str=None, value_int=None, value_real=None):
-    product_id = int(product_id)
-    parameter_definition_id = int(parameter_definition_id)
-
-    if not Product.objects.filter(id=product_id).exists():
-        raise ValueError("Нет такого product")
-
-    pd = ParameterDefinition.objects.filter(id=parameter_definition_id).first()
-    if pd is None:
-        raise ValueError("Нет такого parameter_definition")
-
-    if value_str is None and value_int is None and value_real is None:
+def create_product_parameter_value(
+    product_id: int,
+    parameter_definition_id: int,
+    value_str: Optional[str] = None,
+    value_int: Optional[int] = None,
+    value_real: Optional[float] = None,
+    value_enum_id: Optional[int] = None
+) -> ProductParameterValue:
+    # ... проверки (например, что передан хотя бы один value) ...
+    # Обновите проверку:
+    if all(v is None for v in [value_str, value_int, value_real, value_enum_id]):
         raise ValueError("Нужно передать хотя бы одно значение")
 
-    if pd.value_type == "str" and value_str is None:
-        raise ValueError("Для value_type='str' нужно value_str")
-    if pd.value_type == "int" and value_int is None:
-        raise ValueError("Для value_type='int' нужно value_int")
-    if pd.value_type == "real" and value_real is None:
-        raise ValueError("Для value_type='real' нужно value_real")
+    # ... проверка типа параметра (если нужно) ...
+    ppv = ProductParameterValue.objects.create(
+        product_id=product_id,
+        parameter_definition_id=parameter_definition_id,
+        value_str=value_str,
+        value_int=value_int,
+        value_real=value_real,
+        value_enum_id=value_enum_id
+    )
+    return ppv
 
     if ProductParameterValue.objects.filter(
         product_id=product_id,
