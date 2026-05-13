@@ -283,6 +283,43 @@ AFTER INSERT OR UPDATE OR DELETE ON product_parameter_value
 EXECUTE FUNCTION trigger_refresh_aggregates();
 */
 
+CREATE OR REPLACE FUNCTION check_parameter_belongs_to_product_class()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_product_node_id INTEGER;
+    v_param_node_id   INTEGER;
+BEGIN
+    SELECT classifier_node_id INTO v_product_node_id
+    FROM product WHERE id = NEW.product_id;
+
+    SELECT classifier_node_id INTO v_param_node_id
+    FROM parameter_definition WHERE id = NEW.parameter_definition_id;
+
+    -- проверяем что v_param_node_id является предком или равен v_product_node_id
+    IF NOT EXISTS (
+        WITH RECURSIVE ancestors AS (
+            SELECT id, parent_id FROM classifier_node WHERE id = v_product_node_id
+            UNION ALL
+            SELECT cn.id, cn.parent_id
+            FROM classifier_node cn
+            JOIN ancestors a ON cn.id = a.parent_id
+        )
+        SELECT 1 FROM ancestors WHERE id = v_param_node_id
+    ) THEN
+        RAISE EXCEPTION
+            'Параметр (node_id=%) не принадлежит классу продукта (node_id=%)',
+            v_param_node_id, v_product_node_id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_check_parameter_belongs
+BEFORE INSERT OR UPDATE ON product_parameter_value
+FOR EACH ROW
+EXECUTE FUNCTION check_parameter_belongs_to_product_class();
+
 INSERT INTO classifier_node (id, parent_id, name, unit, sort_order) VALUES
 (1, NULL, 'Колбасное изделие', 'грамм', 0),
 (2, 1, 'Варёные',  'грамм', 1),

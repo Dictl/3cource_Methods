@@ -35,39 +35,33 @@ urlpatterns = [
     path("product-attributes/delete", api_views.api_delete_product_attribute, name="api_delete_product_attribute"),
 
 ######################## параметры (parameters) ##################################
-    # Управление определениями параметров
     path('parameters/', api_views.api_parameters, name='api_parameters'),
-    path('parameters/for-category/<int:category_id>/', api_views.api_parameters_for_category, name='api_parameters_for_category'),   # было parameters/class/..., переименовал для единообразия
+    path('parameters/for-category/<int:category_id>/', api_views.api_parameters_for_category, name='api_parameters_for_category'),
     path('parameters/create/', api_views.api_create_parameter, name='api_create_parameter'),
     path('parameters/update/', api_views.api_update_parameter, name='api_update_parameter'),
-    path('parameters/delete/', api_views.api_delete_parameter, name='api_delete_parameter'),
-
-    # Ограничения для числовых параметров (новые)
-    path('parameter-constraint/get/', api_views.api_get_parameter_constraint, name='api_get_parameter_constraint'),
+    path('parameters/<int:param_def_id>/delete/', api_views.api_delete_parameter, name='api_delete_parameter'),
+    path('parameters/<int:param_def_id>/constraint/', api_views.api_get_parameter_constraint, name='api_get_parameter_constraint'),
     path('parameter-constraint/create/', api_views.api_create_parameter_constraint, name='api_create_parameter_constraint'),
     path('parameter-constraint/update/', api_views.api_update_parameter_constraint, name='api_update_parameter_constraint'),
     path('parameters/<int:param_def_id>/constraint/delete/', api_views.api_delete_parameter_constraint,name='api_delete_parameter_constraint'),
-
-    # Единицы измерения (Яна)
     path('unit-dimensions/create/', api_views.api_create_unit_dimension, name='api_create_unit_dimension'),
-    path('unit-dimensions/delete/', api_views.api_delete_unit_dimension, name='api_delete_unit_dimension'),
+    path('unit-dimensions/<int:dimension_id>/delete/', api_views.api_delete_unit_dimension, name='api_delete_unit_dimension'),
+    path('unit-dimensions/', api_views.api_unit_dimensions, name='api_unit_dimensions'),
+    path('unit-dimensions/<int:dimension_id>/', api_views.api_unit_dimension_detail, name='api_unit_dimension_detail'),
+    path('unit-dimensions/update/', api_views.api_update_unit_dimension, name='api_update_unit_dimension'),
+    path('units/', api_views.api_units, name='api_units'),
+    path('units/<int:unit_id>/', api_views.api_unit_detail, name='api_unit_detail'),
+    path('units/by-dimension/<int:dimension_id>/', api_views.api_units_by_dimension, name='api_units_by_dimension'),
+    path('units/update/', api_views.api_update_unit, name='api_update_unit'),
     path('units/create/', api_views.api_create_unit, name='api_create_unit'),
-    path('units/delete/', api_views.api_delete_unit, name='api_delete_unit'),
-
-    # Значения параметров для продуктов (Яна)
+    path('units/<int:unit_id>/delete/', api_views.api_delete_unit, name='api_delete_unit'),
     path('product-parameters/create/', api_views.api_create_product_parameter_value, name='api_create_product_parameter_value'),
     path('product-parameters/update/', api_views.api_update_product_parameter_value, name='api_update_product_parameter_value'),
-    path('product-parameters/delete/', api_views.api_delete_product_parameter_value, name='api_delete_product_parameter_value'),
-
-    # Дополнительные GET-эндпоинты для чтения значений (Валера)
+    path('product-parameters/<int:ppv_id>/delete/', api_views.api_delete_product_parameter_value, name='api_delete_product_parameter_value'),
     path('products/<int:product_id>/parameter-values/', api_views.api_product_parameter_values, name='api_product_parameter_values'),
     path('products/<int:product_id>/parameter-values/<int:param_def_id>/', api_views.api_get_parameter_value, name='api_get_parameter_value'),
-
-    # Поиск и фильтрация продуктов (Яна)
     path('products/for-category/<int:category_id>/with-params/', api_views.api_products_with_params, name='api_products_with_params'),
     path('products/for-category/<int:category_id>/filter/', api_views.api_filter_products_by_params, name='api_filter_products_by_params'),
-
-    # Агрегаты параметров (Валера)
     path('aggregates/parameter-aggregates/', api_views.api_parameter_aggregates, name='api_parameter_aggregates'),
     path('aggregates/refresh/', api_views.api_refresh_aggregates, name='api_refresh_aggregates'),
 ]
