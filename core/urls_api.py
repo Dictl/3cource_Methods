@@ -64,4 +64,5 @@ urlpatterns = [
     path('products/for-category/<int:category_id>/filter/', api_views.api_filter_products_by_params, name='api_filter_products_by_params'),
     path('aggregates/parameter-aggregates/', api_views.api_parameter_aggregates, name='api_parameter_aggregates'),
     path('aggregates/refresh/', api_views.api_refresh_aggregates, name='api_refresh_aggregates'),
+    path('products/filter/', api_views.api_filter_products_by_params_no_class, name='api_filter_products_by_params_no_class'),
 ]

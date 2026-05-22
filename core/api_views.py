@@ -50,6 +50,7 @@ from .service import (
     delete_product_parameter_value,
     find_products_with_params_and_attrs,
     filter_products_by_parameters,
+    filter_products_by_parameters_without_class,
 )
 
 
@@ -135,6 +136,7 @@ def _serialize_product_parameter_value(ppv):
         "value_enum_id": ppv.value_enum_id,
     }
 
+"Построение дерева категорий (classifier_node) с учетом уровня вложенности (level для древовидного вывода)"
 @require_http_methods(["GET"])
 def api_tree(request):
     nodes = build_tree_with_levels(base_output())
@@ -151,7 +153,7 @@ def api_tree(request):
     ]
     return JsonResponse({"ok": True, "data": data})
 
-
+"Получение продуктов для выбранной категории (и всех подкатегорий) по её id"
 @require_http_methods(["GET"])
 def api_category_products(request, category_id):
     all_categories = base_output()
@@ -174,6 +176,7 @@ def api_category_products(request, category_id):
         }
     )
 
+"Получение всех дочерних (потомков) для данной категории (classifier_node.id)"
 @require_http_methods(["GET"])
 def api_get_children(request, category_id):
     all_cats = base_output()
@@ -184,7 +187,7 @@ def api_get_children(request, category_id):
         "children": [{"id": c.id, "name": c.name, "parent_id": c.parent_id} for c in descendants]
     }})
 
-
+"Получение родителей для заданной категории (classifier_node.id)"
 @require_http_methods(["GET"])
 def api_get_parents(request, category_id):
     all_cats = base_output()
@@ -195,7 +198,7 @@ def api_get_parents(request, category_id):
         "parents": [{"id": p.id, "name": p.name, "parent_id": p.parent_id} for p in parents]
     }})
 
-
+"Получение всех терминальных узлов в поддереве выбранной категории"
 @require_http_methods(["GET"])
 def api_get_terminals(request, category_id):
     all_cats = base_output()
@@ -208,6 +211,7 @@ def api_get_terminals(request, category_id):
         "terminal_nodes": [{"id": n.id, "name": n.name, "parent_id": n.parent_id} for n in terminal_nodes]
     }})
 
+"Добавление новой категории (classifier_node) — имя обязательно, к терминальному узлу добавить нельзя"
 @require_http_methods(["POST"])
 def api_add_category(request):
     try:
@@ -235,7 +239,7 @@ def api_add_category(request):
     except ValueError as e:
         return _json_error(str(e))
 
-
+"Добавление нового продукта (product) в категорию. Нельзя добавить к нетерминальному узлу"
 @require_http_methods(["POST"])
 def api_add_product(request):
     try:
@@ -260,7 +264,7 @@ def api_add_product(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
-
+"Перемещение категории (classifier_node) к другому родителю. Запрещено перемещать в терминальную категорию с товарами или делать цикл"
 @require_http_methods(["PUT"])
 def api_move_category(request):
     try:
@@ -276,7 +280,7 @@ def api_move_category(request):
     except ValueError as e:
         return _json_error(str(e))
 
-
+"Изменение порядка расстановки категорий (classifier_node) среди братьев на одном уровне"
 @require_http_methods(["PUT"])
 def api_reorder_category(request):
     try:
@@ -290,6 +294,9 @@ def api_reorder_category(request):
     except ValueError as e:
         return _json_error(str(e))
 
+"""Получить дополнительную мета-информацию для интерфейса выбора новой родительской категории при перемещении
+    Возвращает, можно ли переместить в ту или иную вершину, и причину блокировки (например, 'cycle', 'terminal')
+"""
 @require_http_methods(["GET"])
 def api_nodes_move_metadata(request):
     moving_node_id = request.GET.get("node_id")
@@ -321,6 +328,7 @@ def api_nodes_move_metadata(request):
 
     return JsonResponse({"nodes": result})
 
+"Получение информации о категории (classifier_node) и всех её потомках"
 @require_http_methods(["GET"])
 def api_category(request, category_id):
     category_id = int(category_id)
@@ -353,6 +361,7 @@ def api_category(request, category_id):
         }
     })
 
+"Получение списка всех категорий (classifier_node)"
 @require_http_methods(["GET"])
 def api_categories(request):
     all_base = base_output()
@@ -368,6 +377,7 @@ def api_categories(request):
     ]
     return JsonResponse({"ok": True, "data": data})
 
+"Получение списка всех товаров (product)"
 @require_http_methods(["GET"])
 def api_products(request):
     all_products = base_product_output()
@@ -385,6 +395,7 @@ def api_products(request):
     ]
     return JsonResponse({"ok": True, "data": data})
 
+"Получение подробной информации по отдельному товару (product) по id"
 @require_http_methods(["GET"])
 def api_product(request, product_id):
     product_id = int(product_id)
@@ -392,6 +403,7 @@ def api_product(request, product_id):
     data = _serialize_product(product)
     return JsonResponse({"ok": True, "data": data})
 
+"Удаление категории (classifier_node) по id (с проверкой, что в ней нет товаров и терминалов с товарами)"
 @require_http_methods(["DELETE"])
 def api_delete_category(request):
     try:
@@ -402,7 +414,7 @@ def api_delete_category(request):
     except (ValueError, KeyError) as e:
         return _json_error(str(e))
 
-
+"Удаление товара (product) по id"
 @require_http_methods(["DELETE"])
 def api_delete_product(request):
     try:
@@ -413,9 +425,10 @@ def api_delete_product(request):
     except (ValueError, KeyError) as e:
         return _json_error(str(e))
 
-
+########################################################################################################################
 "для перечислений"
-
+########################################################################################################################
+"Получить описание перечисления (enum_definition) и все значения (enum_value) для него"
 @require_http_methods(["GET"])
 def api_enum_definition(request, enum_definition_id):
     try:
@@ -430,7 +443,7 @@ def api_enum_definition(request, enum_definition_id):
     except ValueError as e:
         return _json_error(str(e))
 
-
+"Получить все перечисления (enum_definition) с их значениями (enum_value)"
 @require_http_methods(["GET"])
 def api_enums_all(request):
     # возвращаем все enum_definition с их values
@@ -445,7 +458,7 @@ def api_enums_all(request):
         })
     return JsonResponse({"ok": True, "data": data})
 
-
+"Получить все перечисления (enum_definition), определённые для категории и её потомков"
 @require_http_methods(["GET"])
 def api_enums_for_class_tree(request, classifier_node_id):
     try:
@@ -457,6 +470,7 @@ def api_enums_for_class_tree(request, classifier_node_id):
     except ValueError as e:
         return _json_error(str(e))
 
+"Создание нового перечисления (enum_definition) для категории (classifier_node)"
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_create_enum_definition(request):
@@ -473,6 +487,7 @@ def api_create_enum_definition(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
+"Добавление нового значения перечисления (enum_value) в выбранное перечисление (enum_definition)"
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_add_enum_value(request):
@@ -506,6 +521,7 @@ def api_add_enum_value(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
+"Удалить значение перечисления (enum_value) по его id"
 @csrf_exempt
 @require_http_methods(["DELETE"])
 def api_delete_enum_value(request):
@@ -520,6 +536,7 @@ def api_delete_enum_value(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
+"Удалить перечисление (enum_definition), если оно пустое (нет ни одного enum_value)"
 @csrf_exempt
 @require_http_methods(["DELETE"])
 def api_delete_enum_definition(request):
@@ -534,6 +551,7 @@ def api_delete_enum_definition(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
+"Изменить порядок enum_value внутри одного перечисления (enum_definition)"
 @csrf_exempt
 @require_http_methods(["PUT"])
 def api_reorder_enum_value(request):
@@ -555,6 +573,7 @@ def api_reorder_enum_value(request):
     except (TypeError, ValueError, EnumValue.DoesNotExist) as e:
         return _json_error(str(e))
 
+"Назначить значение перечисления (enum_value) товару (product)"
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_assign_enum_value_to_product(request):
@@ -576,7 +595,7 @@ def api_assign_enum_value_to_product(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
-
+"Получить все product_attribute_value (атрибуты товаров, отношение товар/значение enum)"
 @require_http_methods(["GET"])
 def api_product_attribute_values(request):
     pavs = product_attribute_values_output()
@@ -585,6 +604,7 @@ def api_product_attribute_values(request):
         "data": [_serialize_product_attribute_value(p) for p in pavs]
     })
 
+"Получить все характеристики-атрибуты для товара (product) по его id"
 @require_http_methods(["GET"])
 def api_product_enums(request, product_id):
     try:
@@ -610,6 +630,7 @@ def api_product_enums(request, product_id):
         "enums": enums_unique
     })
 
+"Удалить атрибут товара (product_attribute_value) по id"
 @csrf_exempt
 @require_http_methods(["DELETE"])
 def api_delete_product_attribute(request):
@@ -624,17 +645,22 @@ def api_delete_product_attribute(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
-
+########################################################################################################################
+"справочник"
+########################################################################################################################
+"Получить все определения параметров (parameter_definition)"
 @require_http_methods(["GET"])
 def api_parameters(request):
     params = get_all_parameter_definition()
     return JsonResponse({"ok": True, "data": [_serialize_parameter_definition(p) for p in params]})
 
+"Получить параметры (parameter_definition) для категории с учетом наследования от родителей"
 @require_http_methods(["GET"])
 def api_parameters_for_category(request, category_id):
     params = get_class_parameters_with_inheritance(category_id)
     return JsonResponse({"ok": True, "data": [_serialize_parameter_definition(p) for p in params]})
 
+"Создать новый параметр (parameter_definition) для категории (classifier_node)"
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_create_parameter(request):
@@ -651,6 +677,7 @@ def api_create_parameter(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
+"Обновить параметр (parameter_definition) по id"
 @csrf_exempt
 @require_http_methods(["PUT"])
 def api_update_parameter(request):
@@ -667,6 +694,7 @@ def api_update_parameter(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
+"Удалить параметр (parameter_definition) по id"
 @csrf_exempt
 @require_http_methods(["DELETE"])
 def api_delete_parameter(request, param_def_id):
@@ -676,6 +704,7 @@ def api_delete_parameter(request, param_def_id):
     except Exception as e:
         return _json_error(str(e))
 
+"Создать измерение (unit_dimension) – нельзя дублировать имя"
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_create_unit_dimension(request):
@@ -686,6 +715,7 @@ def api_create_unit_dimension(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
+"Удалить измерение (unit_dimension) по id"
 @csrf_exempt
 @require_http_methods(["DELETE"])
 def api_delete_unit_dimension(request, dimension_id):
@@ -695,6 +725,7 @@ def api_delete_unit_dimension(request, dimension_id):
     except Exception as e:
         return _json_error(str(e))
 
+"Создать единицу измерения (unit)"
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_create_unit(request):
@@ -711,6 +742,7 @@ def api_create_unit(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
+"Удалить единицу измерения (unit) по id"
 @csrf_exempt
 @require_http_methods(["DELETE"])
 def api_delete_unit(request, unit_id):
@@ -720,6 +752,7 @@ def api_delete_unit(request, unit_id):
     except Exception as e:
         return _json_error(str(e))
 
+"Создать значение параметра для товара (product_parameter_value), поддержка строковых, числовых и enum"
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_create_product_parameter_value(request):
@@ -755,6 +788,7 @@ def api_create_product_parameter_value(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
+"Обновить значение параметра для товара (product_parameter_value) по id"
 @csrf_exempt
 @require_http_methods(["PUT"])
 def api_update_product_parameter_value(request):
@@ -782,6 +816,7 @@ def api_update_product_parameter_value(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
+"Удалить значение параметра для товара (product_parameter_value) по id"
 @csrf_exempt
 @require_http_methods(["DELETE"])
 def api_delete_product_parameter_value(request, ppv_id):
@@ -791,6 +826,7 @@ def api_delete_product_parameter_value(request, ppv_id):
     except Exception as e:
         return _json_error(str(e))
 
+"Получить все товары по категории с выводом всех их параметров и атрибутов"
 @require_http_methods(["GET"])
 def api_products_with_params(request, category_id):   # параметр category_id, не classifier_node_id
     result = find_products_with_params_and_attrs(category_id)
@@ -799,6 +835,10 @@ def api_products_with_params(request, category_id):   # параметр categor
              "attributes": item["attributes"]} for item in result]
     return JsonResponse({"ok": True, "data": data})
 
+"""Фильтрация товаров по значениям параметров C УЧЁТОМ категории (category_id).
+    filters = [{"parameter_definition_id": 10, "value_int": 1}, ...]
+    Поддержка фильтров с min/max через operator (gte/lte) при необходимости.
+"""
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_filter_products_by_params(request, category_id):
@@ -834,8 +874,21 @@ def api_filter_products_by_params(request, category_id):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
+"Фильтрация товаров по значениям параметров без учета категории (аналогична фильтрации с category, но по всем товарам сразу)"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_filter_products_by_params_no_class(request):
+    try:
+        payload = _parse_json(request)
+        filters = payload.get("filters", [])
+        products = filter_products_by_parameters_without_class(filters)
+        return JsonResponse({"ok": True, "data": [_serialize_product(p) for p in products]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
 # ========== ОГРАНИЧЕНИЯ ДЛЯ ЧИСЛОВЫХ ПАРАМЕТРОВ ==========
 
+"Получить ограничение (min/max) для числового параметра (parameter_definition_id)"
 @require_http_methods(["GET"])
 @csrf_exempt
 def api_get_parameter_constraint(request, param_def_id):
@@ -852,6 +905,7 @@ def api_get_parameter_constraint(request, param_def_id):
     except ParameterNumericConstraint.DoesNotExist:
         return JsonResponse({"ok": True, "data": None})
 
+"Создать ограничение (min/max) для числового параметра (parameter_definition_id)"
 @require_http_methods(["POST"])
 @csrf_exempt
 def api_create_parameter_constraint(request):
@@ -907,7 +961,7 @@ def api_create_parameter_constraint(request):
     except Exception as e:
         return _json_error(str(e))
 
-
+"Обновить существующее ограничение (min/max) для числового параметра (parameter_definition_id)"
 @require_http_methods(["POST"])
 @csrf_exempt
 def api_update_parameter_constraint(request):
@@ -953,6 +1007,7 @@ def api_update_parameter_constraint(request):
     except Exception as e:
         return _json_error(str(e))
 
+"Удалить ограничение (min/max) для числового параметра (parameter_definition_id)"
 @require_http_methods(["DELETE"])
 @csrf_exempt
 def api_delete_parameter_constraint(request, param_def_id):
@@ -965,6 +1020,7 @@ def api_delete_parameter_constraint(request, param_def_id):
 
 # ========== ЧТЕНИЕ ЗНАЧЕНИЙ ПАРАМЕТРОВ ПРОДУКТОВ ==========
 
+"Получить все значения параметров (product_parameter_value) для товара по его id"
 @require_http_methods(["GET"])
 def api_product_parameter_values(request, product_id):
     """Возвращает все значения параметров для данного продукта."""
@@ -972,6 +1028,7 @@ def api_product_parameter_values(request, product_id):
     data = [_serialize_product_parameter_value(p) for p in ppvs]
     return JsonResponse({"ok": True, "data": data})
 
+"Получить значение одного параметра для товара (product), по product_id и param_def_id"
 @require_http_methods(["GET"])
 def api_get_parameter_value(request, product_id, param_def_id):
     """Возвращает значение конкретного параметра для продукта (или null)."""
@@ -983,6 +1040,7 @@ def api_get_parameter_value(request, product_id, param_def_id):
 
 # ========== АГРЕГАТЫ ПАРАМЕТРОВ ==========
 
+"Получить агрегаты по параметрам из mv_parameter_aggregates (среднее, мин, макс и т.д.), фильтрация по категории через ?category_id="
 @require_http_methods(["GET"])
 def api_parameter_aggregates(request):
     """
@@ -1032,6 +1090,7 @@ def api_parameter_aggregates(request):
     except Exception as e:
         return _json_error(str(e))
 
+"Обновить агрегаты (REFRESH MATERIALIZED VIEW mv_parameter_aggregates)"
 @require_http_methods(["POST"])
 @csrf_exempt
 def api_refresh_aggregates(request):
@@ -1043,6 +1102,7 @@ def api_refresh_aggregates(request):
     except Exception as e:
         return _json_error(str(e))
 
+"Получить список всех размерностей измерения (unit_dimension)"
 @require_http_methods(["GET"])
 def api_unit_dimensions(request):
     """Список всех размерностей."""
@@ -1050,6 +1110,7 @@ def api_unit_dimensions(request):
     data = [_serialize_unit_dimension(d) for d in dimensions]
     return JsonResponse({"ok": True, "data": data})
 
+"Получить одну размерность (unit_dimension) по id"
 @require_http_methods(["GET"])
 def api_unit_dimension_detail(request, dimension_id):
     """Получить одну размерность по id."""
@@ -1059,6 +1120,7 @@ def api_unit_dimension_detail(request, dimension_id):
     except UnitDimension.DoesNotExist:
         return _json_error("Размерность не найдена", 404)
 
+"Обновить название размерности (unit_dimension)"
 @csrf_exempt
 @require_http_methods(["PUT"])
 def api_update_unit_dimension(request):
@@ -1078,6 +1140,7 @@ def api_update_unit_dimension(request):
     except Exception as e:
         return _json_error(str(e))
 
+"Получить список всех единиц измерения (unit), вместе с размерностью"
 @require_http_methods(["GET"])
 def api_units(request):
     """Список всех единиц измерения (с присоединённой размерностью)."""
@@ -1085,6 +1148,7 @@ def api_units(request):
     data = [_serialize_unit(u) for u in units]
     return JsonResponse({"ok": True, "data": data})
 
+"Получить одну единицу измерения (unit) по id"
 @require_http_methods(["GET"])
 def api_unit_detail(request, unit_id):
     """Получить одну единицу по id."""
@@ -1094,6 +1158,7 @@ def api_unit_detail(request, unit_id):
     except Unit.DoesNotExist:
         return _json_error("Единица не найдена", 404)
 
+"Получить все единицы измерения (unit), принадлежащие указанной размерности (dimension_id)"
 @require_http_methods(["GET"])
 def api_units_by_dimension(request, dimension_id):
     """Список единиц, принадлежащих указанной размерности."""
@@ -1101,6 +1166,7 @@ def api_units_by_dimension(request, dimension_id):
     data = [_serialize_unit(u) for u in units]
     return JsonResponse({"ok": True, "data": data})
 
+"Обновить поля (имя, символ, коэффициенты, размерность) для единицы измерения (unit)"
 @csrf_exempt
 @require_http_methods(["PUT"])
 def api_update_unit(request):
@@ -1129,7 +1195,7 @@ def api_update_unit(request):
         return _json_error(str(e))
 
 # ========== HELPER ==========
-
+"Получить все допустимые типы значений параметров (для фронта)"
 @require_http_methods(["GET"])
 def api_parameter_value_types(request):
     """Возвращает список допустимых типов значений параметров."""
@@ -1138,3 +1204,5 @@ def api_parameter_value_types(request):
              {'value': 'real', 'label': 'Вещественное число'},
              {'value': 'enum', 'label': 'Перечисление'}]
     return JsonResponse({"ok": True, "data": types})
+
+

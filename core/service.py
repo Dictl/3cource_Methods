@@ -10,14 +10,18 @@ from core.models import (
     ParameterDefinition,
 )
 from django.db.models import Q
+from typing import Optional
 
-#######################классификатор###########################
+#############################################КЛАССИФИКАТОР#############################################
+"Получение всего classifier_node"
 def base_output():
     return list(ClassifierNode.objects.all())
 
+"Получение всего product"
 def base_product_output():
     return list(Product.objects.all())
 
+"Создаст ли перемещение classifier_node цикл"
 def would_create_cycle(all_base, node_id, new_parent_id):
     if new_parent_id is None:
         return False
@@ -45,6 +49,7 @@ def would_create_cycle(all_base, node_id, new_parent_id):
 
     return False
 
+"Добавление к classifier_node level. level - нужен для древовидного вывода"
 def build_tree_with_levels(all_base, p_id=None, current_level=0):
     result_with_levels = []
 
@@ -57,6 +62,7 @@ def build_tree_with_levels(all_base, p_id=None, current_level=0):
 
     return result_with_levels
 
+"Поиск всех потомков"
 def search_child_nodes(all_base, node_id):
     result_children = []
 
@@ -67,14 +73,15 @@ def search_child_nodes(all_base, node_id):
 
     return result_children
 
+"есть ли дети?"
 def has_children(all_base, node_id):
     for element in all_base:
         if element.parent_id == node_id:
             return True
     return False
 
+"Ищет все терминальные узлы в поддереве (включая сам узел и его потомков)"
 def display_terminal_nodes(all_base, node_id):
-    # Ищет все терминальные узлы в поддереве (включая сам узел и его потомков)
     terminal_nodes = []
     for element in all_base:
         if element.id == node_id or (element.parent_id == node_id and not has_children(all_base, element.id)):
@@ -82,6 +89,7 @@ def display_terminal_nodes(all_base, node_id):
 
     return terminal_nodes
 
+"Ищет все продукты"
 def display_parent_product(all_base, all_base_product, node_id):
     selected_category = None
     result_product = []
@@ -99,6 +107,7 @@ def display_parent_product(all_base, all_base_product, node_id):
 
     return selected_category, result_product
 
+"Поиск всех родителей"
 def search_parent_nodes(all_base, node_id):
     result_parents = []
     current_category = None
@@ -120,6 +129,7 @@ def search_parent_nodes(all_base, node_id):
 
     return result_parents
 
+"Добавление еще одной категории в classifier_node. Нельзя добавить с таким же имененм, к терминальному узлу"
 def add_category(name, parent_id, unit):
     if ClassifierNode.objects.filter(name=name).exists():
         raise ValueError(f"Категория с именем '{name}' уже существует")
@@ -140,6 +150,7 @@ def add_category(name, parent_id, unit):
     new_category.save()
     return new_category
 
+"Добавление еще одной продукта в product. Нельзя добавить с таким же имененм, sku и к нетерминальному узлу"
 def add_product(name, category_id, sku, price, supplier, weight_gram):
     if Product.objects.filter(name=name).exists():
         raise ValueError(f"Товар с именем '{name}' уже существует")
@@ -161,9 +172,10 @@ def add_product(name, category_id, sku, price, supplier, weight_gram):
     new_product.save()
     return new_product
 
+"рекурсивное удаление категории(classifier_node)"
 def search_delete_category(delete_id):
     delete_id = int(delete_id)
-    all_base = base_output()  # Все категории
+    all_base = base_output()
 
     # Проверка на наличие товаров в самой категории
     if Product.objects.filter(classifier_node_id=delete_id).exists():
@@ -200,6 +212,7 @@ def search_delete_category(delete_id):
     category = ClassifierNode.objects.get(id=delete_id)
     category.delete()
 
+"Удаляет продукт и связанные с ним значения параметров(product_parameter_value)"
 def search_delete_product(delete_id):
     delete_id = int(delete_id)
 
@@ -214,6 +227,7 @@ def search_delete_product(delete_id):
 
     raise ValueError(f"Товар с id '{delete_id}' не найден")
 
+"Перемещение к другой вершине (смена родителя)"
 def move_category(category_id, new_parent_id):
     category_id = int(category_id)
     if new_parent_id is not None:
@@ -233,6 +247,7 @@ def move_category(category_id, new_parent_id):
             element.save()
             break
 
+"Изменение порядка среди братьев (на том же уровне)"
 def reorder_category(category_id, target_position_id):
     category_id = int(category_id)
     all_base = base_output()
@@ -266,7 +281,7 @@ def reorder_category(category_id, target_position_id):
         cat.sort_order = index
         cat.save()
 
-#######################перечисления###########################
+#############################################ПЕРЕЧИСЛЕНИЯ#############################################
 
 "получение enum_value при выборе enum_definition"
 def get_enum_definition_with_values(enum_definition_id):
@@ -298,6 +313,7 @@ def get_all_enums_with_values():
 
     return result
 
+"Изменение порядка среди enum_value"
 def reorder_enum_value(enum_value_id, target_position_id):
     enum_value_id = int(enum_value_id)
 
@@ -345,6 +361,7 @@ def validity_check_for_enum_definition(description):
 
     return not EnumDefinition.objects.filter(description__iexact=desc).exists()
 
+"Создание нового перечисления (EnumDefinition) для категории"
 def create_enum_definition(classifier_node_id, description):
     classifier_node_id = int(classifier_node_id)
     desc = (description or "").strip()
@@ -370,6 +387,7 @@ def create_enum_definition(classifier_node_id, description):
 
     return enum_def
 
+"Добавление нового значения enum_value в перечисление enum_definition"
 def add_enum_value(enum_definition_id, value_str=None, value_int=None, value_real=None):
     enum_definition_id = int(enum_definition_id)
     value = (value_str or "").strip()
@@ -403,6 +421,7 @@ def add_enum_value(enum_definition_id, value_str=None, value_int=None, value_rea
 
     return enum_value
 
+"удаление enum_value"
 def delete_enum_value(enum_value_id):
     enum_value_id = int(enum_value_id)
 
@@ -412,6 +431,7 @@ def delete_enum_value(enum_value_id):
 
     ev.delete()
 
+"удаление enum_definition, только если у него нет enum_value"
 def delete_enum_definition(enum_definition_id):
     enum_definition_id = int(enum_definition_id)
 
@@ -441,7 +461,7 @@ def enum_definitions_for_class_tree(classifier_node_id):
 
     return enum_defs
 
-"заполнение таблицы атрибутов"
+"заполнение таблицы атрибутов product_attribute_values"
 def assign_enum_value_to_product(product_id, enum_value_id=None):
     product_id = int(product_id)
 
@@ -469,6 +489,7 @@ def assign_enum_value_to_product(product_id, enum_value_id=None):
 
     return pav
 
+"получение всех product_attribute_values"
 def product_attribute_values_output():
     return list(ProductAttributeValue.objects.all())
 
@@ -501,6 +522,7 @@ def get_product_enums(product_id):
             })
     return result
 
+"удаление product_attribute_values"
 def delete_product_attribute(product_id):
     product_id = int(product_id)
     elem = ProductAttributeValue.objects.filter(id=product_id).first()
@@ -508,11 +530,13 @@ def delete_product_attribute(product_id):
         raise ValueError("Нет такого product_attribute")
     elem.delete()
 
-#######################справочник###########################
+#############################################СПРАВОЧНИК#############################################
 
+"получение всех parameter_definition"
 def get_all_parameter_definition():
     return list(ParameterDefinition.objects.all())
 
+"Получение параметров категории с учетом наследования от родителей"
 def get_class_parameters_with_inheritance(classifier_node_id):
     all_nodes = base_output()
     parents = search_parent_nodes(all_nodes, classifier_node_id)
@@ -532,6 +556,7 @@ def get_class_parameters_with_inheritance(classifier_node_id):
 
     return list(merged.values())
 
+"Удаление unit_dimension. Нельзя удалить unit_dimension, если есть связанные unit"
 def delete_unit_dimension(unit_dimension_id):
     unit_dimension_id = int(unit_dimension_id)
 
@@ -543,6 +568,7 @@ def delete_unit_dimension(unit_dimension_id):
         raise ValueError("Нет такой unit_dimension")
     ud.delete()
 
+"Создание unit_dimension. Нельзя добавить с таким же именем"
 def create_unit_dimension(name):
     name = (name or "").strip()
     if not name:
@@ -558,6 +584,7 @@ def create_unit_dimension(name):
     ud.save(force_insert=True)
     return ud
 
+"удаление unit. Нельзя удалить unit, если он используется в parameter_definition"
 def delete_unit(unit_id):
     unit_id = int(unit_id)
 
@@ -569,6 +596,7 @@ def delete_unit(unit_id):
         raise ValueError("Нет такой unit")
     unit.delete()
 
+"Создание unit"
 def create_unit(dimension_id, name, symbol, to_base_factor=1, to_base_offset=0):
     name = (name or "").strip()
     symbol = (symbol or "").strip()
@@ -602,6 +630,7 @@ def create_unit(dimension_id, name, symbol, to_base_factor=1, to_base_offset=0):
     unit.save(force_insert=True)
     return unit
 
+"Создание parameter_definition"
 def create_parameter_definition(classifier_node_id, name, unit_id, value_type, sort_order=0):
     classifier_node_id = int(classifier_node_id)
     name = (name or "").strip()
@@ -640,6 +669,7 @@ def create_parameter_definition(classifier_node_id, name, unit_id, value_type, s
     pd.save(force_insert=True)
     return pd
 
+"удаление parameter_definition. Нельзя удалить параметр, если он используется в product_parameter_value"
 def delete_parameter_definition(parameter_definition_id):
     parameter_definition_id = int(parameter_definition_id)
 
@@ -651,6 +681,7 @@ def delete_parameter_definition(parameter_definition_id):
         raise ValueError("Нет такого parameter_definition")
     pd.delete()
 
+"Создание product_parameter_value"
 def create_product_parameter_value(
     product_id: int,
     parameter_definition_id: int,
@@ -659,22 +690,21 @@ def create_product_parameter_value(
     value_real: Optional[float] = None,
     value_enum_id: Optional[int] = None
 ) -> ProductParameterValue:
-    # ... проверки (например, что передан хотя бы один value) ...
-    # Обновите проверку:
     if all(v is None for v in [value_str, value_int, value_real, value_enum_id]):
         raise ValueError("Нужно передать хотя бы одно значение")
 
-    # ... проверка типа параметра (если нужно) ...
-    ppv = ProductParameterValue.objects.create(
-        product_id=product_id,
-        parameter_definition_id=parameter_definition_id,
-        value_str=value_str,
-        value_int=value_int,
-        value_real=value_real,
-        value_enum_id=value_enum_id
-    )
-    return ppv
+    # Проверка типа параметра
+    pd = ParameterDefinition.objects.get(id=parameter_definition_id)
+    if pd.value_type == "str" and value_str is None:
+        raise ValueError("Для value_type='str' нужно value_str")
+    if pd.value_type == "int" and value_int is None:
+        raise ValueError("Для value_type='int' нужно value_int")
+    if pd.value_type == "real" and value_real is None:
+        raise ValueError("Для value_type='real' нужно value_real")
+    if pd.value_type == "enum" and value_enum_id is None:
+        raise ValueError("Для value_type='enum' нужно value_enum_id")
 
+    # Проверка уникальности значения этого параметра у продукта
     if ProductParameterValue.objects.filter(
         product_id=product_id,
         parameter_definition_id=parameter_definition_id
@@ -691,10 +721,12 @@ def create_product_parameter_value(
         value_str=value_str,
         value_int=value_int,
         value_real=value_real,
+        value_enum_id=value_enum_id
     )
     ppv.save(force_insert=True)
     return ppv
 
+"Удаление product_parameter_value"
 def delete_product_parameter_value(product_parameter_value_id):
     product_parameter_value_id = int(product_parameter_value_id)
     ppv = ProductParameterValue.objects.filter(id=product_parameter_value_id).first()
@@ -702,6 +734,7 @@ def delete_product_parameter_value(product_parameter_value_id):
         raise ValueError("Нет такого product_parameter_value")
     ppv.delete()
 
+"Обновление parameter_definition(редактирование)"
 def update_parameter_definition(parameter_definition_id, name=None, unit_id=None, value_type=None, sort_order=None):
     parameter_definition_id = int(parameter_definition_id)
 
@@ -738,6 +771,7 @@ def update_parameter_definition(parameter_definition_id, name=None, unit_id=None
     pd.save()
     return pd
 
+"Обновление product_parameter_value(редактирование)"
 def update_product_parameter_value(product_parameter_value_id,
                                    value_str=None, value_int=None, value_real=None):
     product_parameter_value_id = int(product_parameter_value_id)
@@ -777,6 +811,8 @@ def update_product_parameter_value(product_parameter_value_id,
     ppv.save()
     return ppv
 
+"""Получение товаров со всеми параметрами(product_parameter_value) и атрибутами(product_attribute_value)
+    при выборе определенной категории classifier_node"""
 def find_products_with_params_and_attrs(classifier_node_id):
     classifier_node_id = int(classifier_node_id)
 
@@ -858,7 +894,8 @@ def find_products_with_params_and_attrs(classifier_node_id):
 
     return result
 
-
+""""Фильтрация товаров по параметрам Каждый фильтр — это словарь вида
+{"parameter_definition_id": <id>, "value_int": ..., ...}. !!!Учитывая категорию(classifier_node)"""
 def filter_products_by_parameters(classifier_node_id, filters):
 
     classifier_node_id = int(classifier_node_id)
@@ -869,6 +906,37 @@ def filter_products_by_parameters(classifier_node_id, filters):
 
     products = Product.objects.filter(classifier_node_id__in=node_ids)
     product_ids = set(products.values_list("id", flat=True))
+
+    for f in filters:
+        pd_id = int(f.get("parameter_definition_id"))
+        q = Q(parameter_definition_id=pd_id)
+
+        if "value_str" in f:
+            q &= Q(value_str=f["value_str"])
+        elif "value_int" in f:
+            q &= Q(value_int=f["value_int"])
+        elif "value_real" in f:
+            q &= Q(value_real=f["value_real"])
+        else:
+            raise ValueError("В фильтре нет значения")
+
+        matched_ids = set(
+            ProductParameterValue.objects
+            .filter(q)
+            .values_list("product_id", flat=True)
+        )
+        product_ids &= matched_ids
+
+        if not product_ids:
+            break
+
+    return list(Product.objects.filter(id__in=product_ids))
+
+"""Фильтрация продуктов по значениям параметров !!!без учета classifier_node.
+    filters = [{"parameter_definition_id": 10, "value_str": "AAA"}, ...]
+"""
+def filter_products_by_parameters_without_class(filters):
+    product_ids = set(Product.objects.values_list("id", flat=True))
 
     for f in filters:
         pd_id = int(f.get("parameter_definition_id"))
