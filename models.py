@@ -39,6 +39,11 @@ class AuthPermission(models.Model):
 
 
 class AuthUser(models.Model):
+    ROLE_CHOICES = [
+        ('admin', 'Admin'),
+        ('viewer', 'Viewer'),
+    ]
+    
     password = models.CharField(max_length=128)
     last_login = models.DateTimeField(blank=True, null=True)
     is_superuser = models.BooleanField()
@@ -49,6 +54,7 @@ class AuthUser(models.Model):
     is_staff = models.BooleanField()
     is_active = models.BooleanField()
     date_joined = models.DateTimeField()
+    role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='viewer')
 
     class Meta:
         managed = False

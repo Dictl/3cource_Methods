@@ -11,7 +11,7 @@
         <aside class="sidebar">
             <div class="sidebar-header">
                 <h1>Дерево классификатора</h1>
-                <div class="toolbar">
+                <div class="toolbar admin-only">
                     <button id="openModalBtn">➕ Добавить вершину</button>
                     <button id="openMoveModalBtn">✂️ Переместить вершину</button>
                 </div>
@@ -47,6 +47,7 @@
             <div class="topbar">
                 <div class="topbar-user">
                     Вошли как <strong>{{ user.username }}</strong>
+                    <span class="user-role" id="userRole">{{ user.role|default:"viewer" }}</span>
                 </div>
                 <div class="topbar-actions">
                     {% if user.is_staff or user.is_superuser %}
@@ -58,8 +59,8 @@
             <div id="messageBox" class="message"></div>
             <div class="tabs">
                 <button class="tab-btn active" data-tab="tab-content">Содержимое</button>
-                <button class="tab-btn" data-tab="tab-params">Редактор параметров класса</button>
-                <button class="tab-btn" data-tab="tab-enums">Редактор перечислений</button>
+                <button class="tab-btn admin-only" data-tab="tab-params">Редактор параметров класса</button>
+                <button class="tab-btn admin-only" data-tab="tab-enums">Редактор перечислений</button>
                 <button class="tab-btn" data-tab="tab-product">Карточка изделия</button>
                 <button class="tab-btn" data-tab="tab-search">Поиск изделий</button>
             </div>
@@ -74,7 +75,7 @@
                 </div>
             </section>
 
-            <section id="tab-params" class="tab-section">
+            <section id="tab-params" class="tab-section admin-only">
                 <div class="section-header">
                     <h2>Параметры класса</h2>
                     <span class="badge" id="paramsCategoryBadge">Категория не выбрана</span>
@@ -109,7 +110,7 @@
                 <div id="paramsTable"></div>
             </section>
 
-            <section id="tab-enums" class="tab-section">
+            <section id="tab-enums" class="tab-section admin-only">
                 <div class="section-header">
                     <h2>Перечисления</h2>
                     <span class="badge" id="enumsCategoryBadge">Категория не выбрана</span>
