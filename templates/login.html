@@ -1,0 +1,42 @@
+{% load static %}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Вход</title>
+    <link rel="stylesheet" href="{% static 'css/home.css' %}">
+</head>
+<body class="auth-page">
+    <div class="auth-card">
+        <h1>Вход в систему</h1>
+        {% if form.non_field_errors %}
+            <div class="form-errors">{{ form.non_field_errors }}</div>
+        {% endif %}
+        <form method="post">
+            {% csrf_token %}
+            <div class="form-grid">
+                <div>
+                    <label for="id_username">Логин</label>
+                    {{ form.username }}
+                    {{ form.username.errors }}
+                </div>
+                <div>
+                    <label for="id_password">Пароль</label>
+                    {{ form.password }}
+                    {{ form.password.errors }}
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="primary" type="submit">Войти</button>
+            </div>
+        </form>
+        <p class="auth-footer">
+            Нет аккаунта? <a href="{% url 'register' %}">Зарегистрироваться</a>
+        </p>
+        <p class="auth-hint">
+            Администратор создается через <code>python manage.py createsuperuser</code>.
+        </p>
+    </div>
+</body>
+</html>
+
