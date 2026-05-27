@@ -11,6 +11,7 @@ var state = {
     constraintExists: false,
     enumsCache: null,
     unitsCache: null,
+    unitDimensionsCache: null,
     paramsCache: null,
     productParamValues: null,
     currentEnumValues: [],
@@ -19,6 +20,7 @@ var state = {
 var modal = document.getElementById('modal');
 var moveModal = document.getElementById('moveModal');
 var constraintModal = document.getElementById('constraintModal');
+var unitModal = document.getElementById('unitModal');
 var overlay = document.getElementById('overlay');
 var messageBox = document.getElementById('messageBox');
 
@@ -27,8 +29,10 @@ var contentContainer = document.getElementById('contentContainer');
 
 var openBtn = document.getElementById('openModalBtn');
 var openMoveBtn = document.getElementById('openMoveModalBtn');
+var openUnitModalBtn = document.getElementById('openUnitModalBtn');
 var cancelBtn = document.getElementById('cancelBtn');
 var cancelMoveBtn = document.getElementById('cancelMoveBtn');
+var unitCloseBtn = document.getElementById('unitCloseBtn');
 
 var addForm = document.getElementById('addForm');
 var moveForm = document.getElementById('moveForm');
@@ -89,6 +93,19 @@ var constraintMinInput = document.getElementById('constraint_min');
 var constraintMaxInput = document.getElementById('constraint_max');
 var constraintCancelBtn = document.getElementById('constraintCancelBtn');
 var constraintSaveBtn = document.getElementById('constraintSaveBtn');
+
+var unitList = document.getElementById('unitList');
+var unitIdInput = document.getElementById('unit_id');
+var unitDimensionSelect = document.getElementById('unit_dimension');
+var unitNameInput = document.getElementById('unit_name');
+var unitSymbolInput = document.getElementById('unit_symbol');
+var unitFactorInput = document.getElementById('unit_factor');
+var unitOffsetInput = document.getElementById('unit_offset');
+var unitReloadBtn = document.getElementById('unitReloadBtn');
+var unitSaveBtn = document.getElementById('unitSaveBtn');
+var unitResetBtn = document.getElementById('unitResetBtn');
+var unitPanelCloseBtn = document.getElementById('unitPanelCloseBtn');
+var unitEditorPanel = document.getElementById('unitEditorPanel');
 
 var isAdmin = window.isAdmin === true;
 var dragState = {
@@ -215,6 +232,7 @@ function closeModalFunc() {
     if (modal) modal.style.display = 'none';
     if (moveModal) moveModal.style.display = 'none';
     if (constraintModal) constraintModal.style.display = 'none';
+    if (unitModal) unitModal.style.display = 'none';
     if (overlay) overlay.style.display = 'none';
 }
 
@@ -783,14 +801,204 @@ function handleDelete(deleteType, deleteId, itemName) {
         });
 }
 
-function loadUnits() {
-    if (state.unitsCache) {
+function loadUnits(forceReload) {
+    if (!forceReload && state.unitsCache) {
         return Promise.resolve(state.unitsCache);
     }
     return apiRequest(apiUrls.units)
         .then(function (data) {
             state.unitsCache = data || [];
             return state.unitsCache;
+        });
+}
+
+function loadUnitDimensions(forceReload) {
+    if (!forceReload && state.unitDimensionsCache) {
+        return Promise.resolve(state.unitDimensionsCache);
+    }
+    return apiRequest(apiUrls.unitDimensions)
+        .then(function (data) {
+            state.unitDimensionsCache = data || [];
+            return state.unitDimensionsCache;
+        });
+}
+
+function fillUnitDimensionsSelect() {
+    if (!unitDimensionSelect) return;
+    loadUnitDimensions().then(function (dims) {
+        if (!dims.length) {
+            unitDimensionSelect.innerHTML = '<option value="">— Нет размерностей —</option>';
+            unitDimensionSelect.disabled = true;
+            return;
+        }
+        var html = '<option value="">— Выберите —</option>';
+        for (var i = 0; i < dims.length; i++) {
+            var d = dims[i];
+            html += '<option value="' + d.id + '">' + escapeHtml(d.name) + '</option>';
+        }
+        unitDimensionSelect.disabled = false;
+        unitDimensionSelect.innerHTML = html;
+    }).catch(function () {
+        unitDimensionSelect.innerHTML = '<option value="">— Ошибка загрузки —</option>';
+        unitDimensionSelect.disabled = true;
+    });
+}
+
+function renderUnitList(units) {
+    if (!unitList) return;
+    if (!units || !units.length) {
+        unitList.innerHTML = '<p class="muted">Единицы измерения не найдены.</p>';
+        return;
+    }
+    var html = '<table class="unit-table"><thead><tr>'
+        + '<th>Название</th><th>Символ</th><th>Размерность</th><th></th>'
+        + '</tr></thead><tbody>';
+    for (var i = 0; i < units.length; i++) {
+        var u = units[i];
+        html += '<tr>'
+            + '<td>' + escapeHtml(u.name || '') + '</td>'
+            + '<td>' + escapeHtml(u.symbol || '') + '</td>'
+            + '<td>' + escapeHtml(u.dimension_name || '—') + '</td>'
+            + '<td class="unit-actions">'
+            + '<button class="secondary unit-edit-btn" data-id="' + u.id + '">Изменить</button>'
+            + '<button class="danger unit-delete-btn" data-id="' + u.id + '" data-name="' + escapeHtml(u.name) + '">Удалить</button>'
+            + '</td>'
+            + '</tr>';
+    }
+    html += '</tbody></table>';
+    unitList.innerHTML = html;
+}
+
+function resetUnitEditor() {
+    if (unitIdInput) unitIdInput.value = '';
+    if (unitNameInput) unitNameInput.value = '';
+    if (unitSymbolInput) unitSymbolInput.value = '';
+    if (unitFactorInput) unitFactorInput.value = '1';
+    if (unitOffsetInput) unitOffsetInput.value = '0';
+    if (unitDimensionSelect) unitDimensionSelect.value = '';
+}
+
+function startUnitEdit(unitId) {
+    var unit = null;
+    for (var i = 0; i < state.unitsCache.length; i++) {
+        if (state.unitsCache[i].id === unitId) {
+            unit = state.unitsCache[i];
+            break;
+        }
+    }
+    if (!unit) return;
+    unitIdInput.value = unit.id;
+    unitNameInput.value = unit.name || '';
+    unitSymbolInput.value = unit.symbol || '';
+    unitFactorInput.value = unit.to_base_factor !== null ? unit.to_base_factor : '1';
+    unitOffsetInput.value = unit.to_base_offset !== null ? unit.to_base_offset : '0';
+    unitDimensionSelect.value = unit.dimension_id || '';
+}
+
+function refreshUnitsManager() {
+    if (!unitList) return Promise.resolve();
+    unitList.innerHTML = '<p class="muted">Загрузка...</p>';
+    return Promise.all([loadUnits(true), loadUnitDimensions(true)])
+        .then(function (results) {
+            renderUnitList(results[0]);
+            fillUnitDimensionsSelect();
+        })
+        .catch(function (err) {
+            unitList.innerHTML = '<p class="muted">Ошибка загрузки: ' + escapeHtml(err.message) + '</p>';
+        });
+}
+
+function openUnitModalFunc() {
+    if (!isAdmin) {
+        showMessage('Доступно только администратору', 'error');
+        return;
+    }
+    if (unitEditorPanel) unitEditorPanel.style.display = 'block';
+    resetUnitEditor();
+    refreshUnitsManager();
+}
+
+function closeUnitPanel() {
+    if (unitEditorPanel) unitEditorPanel.style.display = 'none';
+}
+
+function saveUnit() {
+    if (!isAdmin) return;
+    var unitId = unitIdInput.value ? parseInt(unitIdInput.value, 10) : null;
+    var dimensionId = unitDimensionSelect.value ? parseInt(unitDimensionSelect.value, 10) : null;
+    var name = unitNameInput.value.trim();
+    var symbol = unitSymbolInput.value.trim();
+    var factor = unitFactorInput.value;
+    var offset = unitOffsetInput.value;
+
+    if (!dimensionId) {
+        showMessage('Выберите размерность', 'error');
+        return;
+    }
+    if (!name) {
+        showMessage('Название единицы обязательно', 'error');
+        return;
+    }
+    if (!symbol) {
+        showMessage('Символ обязателен', 'error');
+        return;
+    }
+
+    var payload = {
+        dimension_id: dimensionId,
+        name: name,
+        symbol: symbol,
+        to_base_factor: factor || 1,
+        to_base_offset: offset || 0
+    };
+
+    var url = apiUrls.unitCreate;
+    var method = 'POST';
+    if (unitId) {
+        url = apiUrls.unitUpdate;
+        method = 'PUT';
+        payload.unit_id = unitId;
+    }
+
+    apiRequest(url, {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+        .then(function () {
+            showMessage(unitId ? 'Единица обновлена' : 'Единица создана', 'success');
+            resetUnitEditor();
+            return refreshUnitsManager();
+        })
+        .then(function () {
+            return loadUnits(true);
+        })
+        .then(function () {
+            fillUnitsSelect();
+        })
+        .catch(function (err) {
+            showMessage(err.message, 'error');
+        });
+}
+
+function deleteUnit(unitId, unitName) {
+    if (!confirm('Удалить единицу "' + unitName + '"?')) return;
+    apiRequest(apiUrls.unitDelete + unitId + '/delete/', {
+        method: 'DELETE'
+    })
+        .then(function () {
+            showMessage('Единица удалена', 'success');
+            resetUnitEditor();
+            return refreshUnitsManager();
+        })
+        .then(function () {
+            return loadUnits(true);
+        })
+        .then(function () {
+            fillUnitsSelect();
+        })
+        .catch(function (err) {
+            showMessage(err.message, 'error');
         });
 }
 
@@ -803,41 +1011,14 @@ function fillUnitsSelect() {
             var label = u.dimension_name ? u.dimension_name + ' / ' + u.name : u.name;
             html += '<option value="' + u.id + '">' + escapeHtml(label) + '</option>';
         }
+        if (isAdmin) {
+            html += '<option value="__edit_units__" style="color: red; background: #eef;">—— Редактировать единицы ——</option>';
+
+        }
         paramUnitSelect.innerHTML = html;
     }).catch(function () {
         paramUnitSelect.innerHTML = '<option value="">— Ошибка загрузки —</option>';
     });
-}
-
-function loadParamsForCategory() {
-    if (!state.selectedCategoryId) {
-        paramsTable.innerHTML = '<p class="muted">Выберите категорию.</p>';
-        return Promise.resolve([]);
-    }
-    return apiRequest(apiUrls.parametersForCategory + state.selectedCategoryId + '/')
-        .then(function (data) {
-            state.paramsCache = data || [];
-            return state.paramsCache;
-        })
-        .then(function (params) {
-            renderParamsTable(params || []);
-            return params;
-        })
-        .catch(function (err) {
-            paramsTable.innerHTML = '<p class="muted">Ошибка загрузки параметров: ' + escapeHtml(err.message) + '</p>';
-        });
-}
-
-function getValueTypeLabel(valueType) {
-    if (valueType === 'str') return 'Строка';
-    if (valueType === 'int') return 'Целое';
-    if (valueType === 'real') return 'Вещественное';
-    if (valueType === 'enum') return 'Перечисление';
-    return valueType || '—';
-}
-
-function loadConstraint(paramId) {
-    return apiRequest(apiUrls.parameterConstraint + paramId + '/constraint/');
 }
 
 function renderParamsTable(params) {
@@ -1836,6 +2017,18 @@ function handleDocumentClick(e) {
                 showMessage(err.message, 'error');
             });
     }
+
+    var unitEditBtn = e.target.closest('.unit-edit-btn');
+    if (unitEditBtn) {
+        startUnitEdit(parseInt(unitEditBtn.getAttribute('data-id'), 10));
+        return;
+    }
+
+    var unitDeleteBtn = e.target.closest('.unit-delete-btn');
+    if (unitDeleteBtn) {
+        deleteUnit(parseInt(unitDeleteBtn.getAttribute('data-id'), 10), unitDeleteBtn.getAttribute('data-name'));
+        return;
+    }
 }
 
 var tabButtons = document.querySelectorAll('.tab-btn');
@@ -1848,8 +2041,10 @@ for (var t = 0; t < tabButtons.length; t++) {
 
 if (openBtn) openBtn.onclick = openModalFunc;
 if (openMoveBtn) openMoveBtn.onclick = openMoveModalFunc;
+if (openUnitModalBtn) openUnitModalBtn.onclick = openUnitModalFunc;
 if (cancelBtn) cancelBtn.onclick = closeModalFunc;
 if (cancelMoveBtn) cancelMoveBtn.onclick = closeModalFunc;
+if (unitCloseBtn) unitCloseBtn.onclick = closeModalFunc;
 if (overlay) overlay.onclick = closeModalFunc;
 
 if (typeCategory) typeCategory.onclick = toggleFields;
@@ -1875,12 +2070,19 @@ if (paramCancelBtn) paramCancelBtn.onclick = resetParamForm;
 if (constraintCancelBtn) constraintCancelBtn.onclick = closeModalFunc;
 if (constraintSaveBtn) constraintSaveBtn.onclick = saveConstraint;
 
-if (enumCreateBtn) enumCreateBtn.onclick = createEnumDefinition;
-if (enumValueAddBtn) enumValueAddBtn.onclick = addEnumValue;
+if (unitReloadBtn) unitReloadBtn.onclick = refreshUnitsManager;
+if (unitSaveBtn) unitSaveBtn.onclick = saveUnit;
+if (unitResetBtn) unitResetBtn.onclick = resetUnitEditor;
+if (unitPanelCloseBtn) unitPanelCloseBtn.onclick = closeUnitPanel;
 
-if (searchLoadParamsBtn) searchLoadParamsBtn.onclick = renderSearchFilters;
-if (searchRunBtn) searchRunBtn.onclick = runProductSearch;
-
+if (paramUnitSelect) {
+    paramUnitSelect.onchange = function () {
+        if (paramUnitSelect.value === '__edit_units__') {
+            paramUnitSelect.value = '';
+            openUnitModalFunc();
+        }
+    };
+}
 document.addEventListener('click', handleDocumentClick);
 if (treeContainer) {
     treeContainer.addEventListener('dragstart', handleDragStart);

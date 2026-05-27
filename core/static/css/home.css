@@ -742,38 +742,31 @@ button:disabled {
     color: var(--text-primary);
 }
 
-/* =====================================================
-   Badges and Status Indicators
-   ===================================================== */
+.unit-table {
+    width: 100%;
+    border-collapse: collapse;
+}
 
-.badge {
-    display: inline-block;
+.unit-table th,
+.unit-table td {
+    text-align: left;
     padding: var(--spacing-2) var(--spacing-3);
-    border-radius: var(--rounded-full);
-    background-color: var(--primary-light);
-    color: var(--primary-base);
-    font-size: var(--fs-xs);
+    border-bottom: 1px solid var(--border-light);
+    font-size: var(--fs-sm);
+}
+
+.unit-table th {
+    color: var(--text-secondary);
     font-weight: var(--fw-semibold);
 }
 
-.badge.secondary {
-    background-color: var(--secondary-light);
-    color: var(--secondary-base);
+.unit-table tbody tr:hover {
+    background-color: var(--primary-light);
 }
 
-.badge.success {
-    background-color: var(--success-light);
-    color: var(--success-base);
-}
-
-.badge.warning {
-    background-color: var(--warning-light);
-    color: var(--warning-base);
-}
-
-.badge.danger {
-    background-color: var(--danger-light);
-    color: var(--danger-base);
+.unit-actions {
+    display: flex;
+    gap: var(--spacing-2);
 }
 
 /* =====================================================
@@ -1011,6 +1004,12 @@ button:disabled {
     }
 }
 
+@media (max-width: 1100px) {
+    .modal-split {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* =====================================================
    Accessibility Features
    ===================================================== */
@@ -1046,4 +1045,80 @@ select:focus-visible,
 textarea:focus-visible {
     outline: 2px solid var(--primary-base);
     outline-offset: 2px;
+}
+
+.form-grid .inline-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-3);
+}
+
+.form-grid .inline-actions select {
+    flex: 1;
+}
+
+.modal-split {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: var(--spacing-6);
+    margin-bottom: var(--spacing-4);
+}
+
+.unit-panel {
+    margin-top: var(--spacing-4);
+}
+
+.unit-panel .section-header {
+    margin-bottom: var(--spacing-4);
+    padding-bottom: var(--spacing-2);
+}
+
+.unit-panel-title {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-3);
+}
+
+.unit-panel-title h3 {
+    margin: 0;
+}
+
+.unit-list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-3);
+    margin-bottom: var(--spacing-3);
+}
+
+.unit-list-header h4 {
+    margin: 0;
+}
+
+.unit-panel .modal-split {
+    gap: var(--spacing-4);
+    margin-bottom: var(--spacing-3);
+}
+
+.unit-panel .modal-actions {
+    margin-top: var(--spacing-2);
+    gap: var(--spacing-2);
+}
+
+.unit-panel .unit-actions {
+    gap: var(--spacing-1);
+}
+
+.unit-panel button.secondary,
+.unit-panel button.danger {
+    padding: var(--spacing-2) var(--spacing-4);
+    border-radius: var(--rounded-md);
+}
+
+.unit-panel-actions {
+    justify-content: flex-end;
+}
+
+.unit-panel-actions button {
+    min-width: auto;
 }
