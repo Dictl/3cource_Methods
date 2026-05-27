@@ -9,41 +9,41 @@
     --bg-primary: #f8f9fa;
     --bg-secondary: #ffffff;
     --bg-tertiary: #f5f6f8;
-    
+
     --border-light: #e2e5ed;
     --border-medium: #d1d6e0;
     --border-dark: #bcc4d1;
-    
+
     --text-primary: #1a2640;
     --text-secondary: #596274;
     --text-tertiary: #8a90a0;
-    
+
     --primary-base: #2f5f9e;
     --primary-light: #e6effa;
     --primary-dark: #1e3f6b;
     --primary-muted: #d0dff0;
-    
+
     --secondary-base: #6c757d;
     --secondary-light: #f0f2f5;
-    
+
     --success-base: #2e7d32;
     --success-light: #e8f5e9;
-    
+
     --warning-base: #f57c00;
     --warning-light: #fff3e0;
-    
+
     --danger-base: #d32f2f;
     --danger-light: #ffebee;
-    
+
     --shadow-sm: 0 1px 2px rgba(26, 38, 64, 0.04);
     --shadow-md: 0 4px 6px rgba(26, 38, 64, 0.08);
     --shadow-lg: 0 10px 24px rgba(26, 38, 64, 0.12);
     --shadow-xl: 0 15px 40px rgba(26, 38, 64, 0.16);
-    
+
     --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-base: 250ms cubic-bezier(0.4, 0, 0.2, 1);
     --transition-slow: 350ms cubic-bezier(0.4, 0, 0.2, 1);
-    
+
     /* Typography Scale */
     --fs-xs: 0.75rem;
     --fs-sm: 0.875rem;
@@ -53,16 +53,16 @@
     --fs-2xl: 1.5rem;
     --fs-3xl: 1.875rem;
     --fs-4xl: 2.25rem;
-    
+
     --fw-regular: 400;
     --fw-medium: 500;
     --fw-semibold: 600;
     --fw-bold: 700;
-    
+
     --lh-tight: 1.25;
     --lh-normal: 1.5;
     --lh-relaxed: 1.75;
-    
+
     /* Spacing Scale */
     --spacing-1: 0.25rem;
     --spacing-2: 0.5rem;
@@ -74,7 +74,7 @@
     --spacing-10: 2.5rem;
     --spacing-12: 3rem;
     --spacing-16: 4rem;
-    
+
     /* Border Radius */
     --rounded-none: 0;
     --rounded-sm: 0.25rem;
@@ -308,8 +308,28 @@ code {
     transition: all var(--transition-fast);
 }
 
+.tree-node[draggable="true"] {
+    cursor: grab;
+}
+
+.tree-node.dragging {
+    opacity: 0.55;
+    cursor: grabbing;
+}
+
+.tree-node.drop-target {
+    outline: 2px dashed rgba(29, 78, 216, 0.7);
+    outline-offset: 2px;
+}
+
+.tree-node.drop-invalid {
+    outline: 2px dashed rgba(220, 38, 38, 0.7);
+    outline-offset: 2px;
+    background-color: rgba(220, 38, 38, 0.12);
+}
+
 .tree-node:hover {
-    background-color: rgba(47, 95, 158, 0.04);
+    background-color: rgba(47, 95, 158, 0.12);
 }
 
 .tree-node a {
@@ -359,6 +379,32 @@ code {
 .node-actions button:hover {
     background-color: rgba(0, 0, 0, 0.05);
     color: var(--danger-base);
+}
+
+/* =====================================================
+   Tree Depth Highlighting
+   ===================================================== */
+
+/* More saturated 10-level palette */
+.tree-panel li[data-level="9"] > .tree-node { background-color: rgba(15, 23, 42, 0.24); }
+.tree-panel li[data-level="8"] > .tree-node { background-color: rgba(30, 41, 59, 0.22); }
+.tree-panel li[data-level="7"] > .tree-node { background-color: rgba(37, 99, 235, 0.22); }
+.tree-panel li[data-level="6"] > .tree-node { background-color: rgba(59, 130, 246, 0.22); }
+.tree-panel li[data-level="5"] > .tree-node { background-color: rgba(96, 165, 250, 0.22); }
+.tree-panel li[data-level="4"] > .tree-node { background-color: rgba(125, 211, 252, 0.22); }
+.tree-panel li[data-level="3"] > .tree-node { background-color: rgba(56, 189, 248, 0.22); }
+.tree-panel li[data-level="2"] > .tree-node { background-color: rgba(14, 116, 144, 0.22); }
+.tree-panel li[data-level="1"] > .tree-node { background-color: rgba(18, 63, 175, 0.22); }
+.tree-panel li[data-level="0"] > .tree-node { background-color: rgba(29, 78, 216, 0.22); }
+
+/* Fallback for deeper levels (10+) */
+.tree-panel li[data-level]:not([data-level="0"]):not([data-level="1"]):not([data-level="2"]):not([data-level="3"]):not([data-level="4"]):not([data-level="5"]):not([data-level="6"]):not([data-level="7"]):not([data-level="8"]):not([data-level="9"]) > .tree-node {
+    background-color: rgba(148, 163, 184, 0.18);
+}
+
+/* Keep hover consistent and readable */
+.tree-panel .tree-node:hover {
+    background-color: rgba(47, 95, 158, 0.12);
 }
 
 /* =====================================================
@@ -448,7 +494,6 @@ code {
     gap: var(--spacing-2);
     flex-wrap: wrap;
     margin-bottom: var(--spacing-6);
-    border-bottom: 2px solid var(--border-light);
     padding-bottom: var(--spacing-4);
 }
 

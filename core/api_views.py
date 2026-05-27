@@ -893,20 +893,26 @@ def api_filter_products_by_params(request, category_id):
         expanded_filters = []
         for f in filters:
             if "min" in f or "max" in f:
+                use_real = False
+                if "value_real" in f and f["value_real"] is not None:
+                    use_real = True
+                elif f.get("value_type") == "real":
+                    use_real = True
+
+                value_key = "value_real" if use_real else "value_int"
+
                 # Создаём отдельные условия для нижней и верхней границы
                 if "min" in f:
                     expanded_filters.append({
                         "parameter_definition_id": f["parameter_definition_id"],
                         "operator": "gte",
-                        "value_int": f.get("value_int") if "value_int" in f else f["min"],
-                        "value_real": f.get("value_real")
+                        value_key: f["min"],
                     })
                 if "max" in f:
                     expanded_filters.append({
                         "parameter_definition_id": f["parameter_definition_id"],
                         "operator": "lte",
-                        "value_int": f.get("value_int") if "value_int" in f else f["max"],
-                        "value_real": f.get("value_real")
+                        value_key: f["max"],
                     })
             else:
                 # Обычный фильтр с operator
@@ -925,7 +931,34 @@ def api_filter_products_by_params_no_class(request):
     try:
         payload = _parse_json(request)
         filters = payload.get("filters", [])
-        products = filter_products_by_parameters_without_class(filters)
+
+        expanded_filters = []
+        for f in filters:
+            if "min" in f or "max" in f:
+                use_real = False
+                if "value_real" in f and f["value_real"] is not None:
+                    use_real = True
+                elif f.get("value_type") == "real":
+                    use_real = True
+
+                value_key = "value_real" if use_real else "value_int"
+
+                if "min" in f:
+                    expanded_filters.append({
+                        "parameter_definition_id": f["parameter_definition_id"],
+                        "operator": "gte",
+                        value_key: f["min"],
+                    })
+                if "max" in f:
+                    expanded_filters.append({
+                        "parameter_definition_id": f["parameter_definition_id"],
+                        "operator": "lte",
+                        value_key: f["max"],
+                    })
+            else:
+                expanded_filters.append(f)
+
+        products = filter_products_by_parameters_without_class(expanded_filters)
         return JsonResponse({"ok": True, "data": [_serialize_product(p) for p in products]})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
@@ -1263,5 +1296,4 @@ def api_parameter_value_types(request):
              {'value': 'real', 'label': 'Вещественное число'},
              {'value': 'enum', 'label': 'Перечисление'}]
     return JsonResponse({"ok": True, "data": types})
-
 

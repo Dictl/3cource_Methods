@@ -90,6 +90,12 @@ var constraintMaxInput = document.getElementById('constraint_max');
 var constraintCancelBtn = document.getElementById('constraintCancelBtn');
 var constraintSaveBtn = document.getElementById('constraintSaveBtn');
 
+var isAdmin = window.isAdmin === true;
+var dragState = {
+    nodeId: null,
+    targetEl: null
+};
+
 function escapeHtml(value) {
     return String(value || '')
         .replace(/&/g, '&amp;')
@@ -170,6 +176,10 @@ function apiRequest(url, options) {
 function setBadge(badgeEl, text) {
     if (!badgeEl) return;
     badgeEl.textContent = text;
+}
+
+function hasSelectedCategory() {
+    return state.selectedCategoryId !== null && state.selectedCategoryId !== undefined;
 }
 
 function setSelectedCategory(categoryId, categoryName) {
@@ -336,8 +346,9 @@ function renderTree() {
     for (var i = 0; i < state.nodesData.length; i++) {
         var n = state.nodesData[i];
         var isActive = state.selectedCategoryId === n.id;
-        html += '<li style="margin-left:' + (n.level * 1.4) + 'rem;">'
-            + '<div class="tree-node">'
+        var draggableAttr = isAdmin ? ' draggable="true"' : '';
+        html += '<li data-level="' + n.level + '" style="margin-left:' + (n.level * 1.4) + 'rem;">'
+            + '<div class="tree-node" data-node-id="' + n.id + '"' + draggableAttr + '>'
             + '<a href="#" class="node-link' + (isActive ? ' active' : '') + '" data-node-id="' + n.id + '">'
             + escapeHtml(n.name)
             + '</a>'
@@ -350,6 +361,119 @@ function renderTree() {
     }
     html += '</ul>';
     treeContainer.innerHTML = html;
+}
+
+function clearDragTarget() {
+    if (dragState.targetEl) {
+        dragState.targetEl.classList.remove('drop-target', 'drop-invalid');
+        dragState.targetEl = null;
+    }
+}
+
+function handleDragStart(e) {
+    if (!isAdmin) return;
+    var nodeEl = e.target.closest('.tree-node');
+    if (!nodeEl || !nodeEl.getAttribute('draggable')) return;
+    var nodeId = parseInt(nodeEl.getAttribute('data-node-id'), 10);
+    if (!nodeId) return;
+
+    dragState.nodeId = nodeId;
+    nodeEl.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(nodeId));
+}
+
+function handleDragOver(e) {
+    if (!isAdmin || !dragState.nodeId) return;
+    var nodeEl = e.target.closest('.tree-node');
+    if (!nodeEl) return;
+    var targetId = parseInt(nodeEl.getAttribute('data-node-id'), 10);
+    if (!targetId || targetId === dragState.nodeId) return;
+
+    e.preventDefault();
+
+    clearDragTarget();
+    var descendants = getDescendantsIds(dragState.nodeId);
+    if (descendants.indexOf(targetId) !== -1) {
+        nodeEl.classList.add('drop-invalid');
+        dragState.targetEl = nodeEl;
+        return;
+    }
+
+    nodeEl.classList.add('drop-target');
+    dragState.targetEl = nodeEl;
+    e.dataTransfer.dropEffect = 'move';
+}
+
+function handleDragLeave(e) {
+    if (!dragState.targetEl) return;
+    if (e.relatedTarget && dragState.targetEl.contains(e.relatedTarget)) return;
+    clearDragTarget();
+}
+
+function handleDrop(e) {
+    if (!isAdmin || !dragState.nodeId) return;
+    var nodeEl = e.target.closest('.tree-node');
+    if (!nodeEl) return;
+    var targetId = parseInt(nodeEl.getAttribute('data-node-id'), 10);
+    if (!targetId || targetId === dragState.nodeId) return;
+
+    e.preventDefault();
+
+    var descendants = getDescendantsIds(dragState.nodeId);
+    if (descendants.indexOf(targetId) !== -1) {
+        showMessage('Нельзя переместить в потомка', 'error');
+        return;
+    }
+
+    var draggedNode = getNodeById(dragState.nodeId);
+    var targetNode = getNodeById(targetId);
+    if (!draggedNode || !targetNode) return;
+
+    var useReorder = e.shiftKey && draggedNode.parent_id === targetNode.parent_id;
+    var request;
+    if (useReorder) {
+        request = apiRequest(apiUrls.reorderCategory, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                category_id: draggedNode.id,
+                target_position_id: targetNode.id
+            })
+        });
+    } else {
+        request = apiRequest(apiUrls.moveCategory, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                category_id: draggedNode.id,
+                new_parent_id: targetNode.id
+            })
+        });
+    }
+
+    request
+        .then(function () {
+            return loadTree();
+        })
+        .then(function () {
+            if (state.selectedCategoryId) {
+                return loadCategoryProducts(state.selectedCategoryId);
+            }
+        })
+        .then(function () {
+            showMessage(useReorder ? 'Порядок обновлен' : 'Вершина перемещена', 'success');
+        })
+        .catch(function (err) {
+            showMessage(err.message, 'error');
+        });
+}
+
+function handleDragEnd() {
+    var dragging = document.querySelector('.tree-node.dragging');
+    if (dragging) dragging.classList.remove('dragging');
+    clearDragTarget();
+    dragState.nodeId = null;
 }
 
 function renderProductsTable(products) {
@@ -506,6 +630,7 @@ function handleAddSubmit(e) {
     };
 
     var url = apiUrls.addCategory;
+    var successMessage = nodeType === 'category' ? 'Категория создана' : 'Товар создан';
 
     if (nodeType === 'category') {
         payload.unit = document.getElementById('unit').value || null;
@@ -523,7 +648,6 @@ function handleAddSubmit(e) {
         body: JSON.stringify(payload)
     })
         .then(function () {
-            showMessage('Успешно добавлено', 'success');
             addForm.reset();
             toggleFields();
             closeModalFunc();
@@ -531,8 +655,11 @@ function handleAddSubmit(e) {
         })
         .then(function () {
             if (state.selectedCategoryId) {
-                loadCategoryProducts(state.selectedCategoryId);
+                return loadCategoryProducts(state.selectedCategoryId);
             }
+        })
+        .then(function () {
+            showMessage(successMessage, 'success');
         })
         .catch(function (err) {
             showMessage(err.message, 'error');
@@ -715,7 +842,11 @@ function loadConstraint(paramId) {
 
 function renderParamsTable(params) {
     if (!params || !params.length) {
-        paramsTable.innerHTML = '<p class="muted">Параметры для категории не заданы.</p>';
+        paramsTable.innerHTML = ''
+            + '<p class="muted">Параметры для категории не заданы.</p>'
+            + '<div class="modal-actions">'
+            + '<button type="button" class="primary" id="paramAddInlineBtn">Добавить параметр</button>'
+            + '</div>';
         return;
     }
 
@@ -951,6 +1082,11 @@ function loadEnumDefinitionValues(enumDefinitionId) {
     enumValuesTitle.textContent = 'Значения перечисления #' + enumDefinitionId;
     apiRequest(apiUrls.enumDefinition + enumDefinitionId + '/')
         .then(function (data) {
+            var enumTitle = data && data.enum_definition ? (data.enum_definition.description || '') : '';
+            if (enumTitle) {
+                enumValuesTitle.textContent = 'Значения перечисления: ' + enumTitle + ' (#' + enumDefinitionId + ')';
+            }
+
             for (var i = 0; i < state.enumsCache.length; i++) {
                 if (state.enumsCache[i].enum_definition.id === enumDefinitionId) {
                     state.enumsCache[i].values = data.values || [];
@@ -1168,7 +1304,11 @@ function renderProductDetails(product, params, values, enums, attributes) {
 
     html += '<h3>Параметры изделия</h3>';
     if (!params.length) {
-        html += '<p class="muted">Параметры для категории не заданы.</p>';
+        html += ''
+            + '<p class="muted">Параметры для категории не заданы.</p>'
+            + '<div class="modal-actions">'
+            + '<button type="button" class="primary" id="productAddParamBtn">Добавить параметры</button>'
+            + '</div>';
     } else {
         html += '<table class="table"><thead><tr>'
             + '<th>Параметр</th><th>Значение</th><th>Действие</th>'
@@ -1271,7 +1411,7 @@ function assignAttribute() {
     if (!defSelect || !valueSelect) return;
     var valueId = valueSelect.value;
     if (!valueId) {
-        showMessage('Выберите значение пе��ечисления', 'error');
+        showMessage('Выберите значение перечисления', 'error');
         return;
     }
     apiRequest(apiUrls.productAttributesAssign, {
@@ -1395,7 +1535,7 @@ function saveProductParameter(paramId) {
 }
 
 function renderSearchFilters() {
-    if (!state.selectedCategoryId) {
+    if (!hasSelectedCategory()) {
         searchFiltersContainer.innerHTML = '<p class="muted">Выберите категорию.</p>';
         return;
     }
@@ -1412,9 +1552,13 @@ function renderSearchFilters() {
                 if (p.value_type === 'str') {
                     input = '<input type="text" data-filter-type="str" data-param-id="' + p.id + '">';
                 } else if (p.value_type === 'int') {
-                    input = '<input type="number" data-filter-type="int" data-param-id="' + p.id + '">';
+                    input = ''
+                        + '<input type="number" data-filter-type="int" data-range="min" data-param-id="' + p.id + '" placeholder="от"> '
+                        + '<input type="number" data-filter-type="int" data-range="max" data-param-id="' + p.id + '" placeholder="до">';
                 } else if (p.value_type === 'real') {
-                    input = '<input type="number" step="0.01" data-filter-type="real" data-param-id="' + p.id + '">';
+                    input = ''
+                        + '<input type="number" step="0.01" data-filter-type="real" data-range="min" data-param-id="' + p.id + '" placeholder="от"> '
+                        + '<input type="number" step="0.01" data-filter-type="real" data-range="max" data-param-id="' + p.id + '" placeholder="до">';
                 } else {
                     input = '<span class="muted">Поиск по enum не поддержан</span>';
                 }
@@ -1429,27 +1573,85 @@ function renderSearchFilters() {
 }
 
 function runProductSearch() {
-    if (!state.selectedCategoryId) {
+    if (!hasSelectedCategory()) {
         showMessage('Выберите категорию', 'error');
         return;
     }
-    var inputs = searchFiltersContainer.querySelectorAll('input[data-param-id]');
-    var filters = [];
+    var inputs = searchFiltersContainer.querySelectorAll('[data-param-id]');
+    var filtersByParam = {};
     for (var i = 0; i < inputs.length; i++) {
         var input = inputs[i];
-        var value = input.value;
-        if (!value) continue;
         var paramId = parseInt(input.getAttribute('data-param-id'), 10);
         var type = input.getAttribute('data-filter-type');
-        var filter = { parameter_definition_id: paramId };
-        if (type === 'str') {
-            filter.value_str = value;
-        } else if (type === 'int') {
-            filter.value_int = parseInt(value, 10);
-        } else if (type === 'real') {
-            filter.value_real = parseFloat(value);
+        if (!filtersByParam[paramId]) {
+            filtersByParam[paramId] = { type: type };
         }
-        filters.push(filter);
+        var range = input.getAttribute('data-range');
+        if (range === 'min') {
+            filtersByParam[paramId].min = input.value;
+        } else if (range === 'max') {
+            filtersByParam[paramId].max = input.value;
+        } else {
+            filtersByParam[paramId].value = input.value;
+        }
+    }
+
+    var filters = [];
+    var paramIds = Object.keys(filtersByParam);
+    for (var j = 0; j < paramIds.length; j++) {
+        var pid = parseInt(paramIds[j], 10);
+        var item = filtersByParam[paramIds[j]];
+        if (item.type === 'str') {
+            if (item.value) {
+                filters.push({ parameter_definition_id: pid, value_str: item.value });
+            }
+            continue;
+        }
+        if (item.type === 'int' || item.type === 'real') {
+            var minValue = item.min;
+            var maxValue = item.max;
+            if (!minValue && !maxValue) {
+                continue;
+            }
+            var parsedMin = null;
+            var parsedMax = null;
+            if (minValue) {
+                parsedMin = item.type === 'int' ? parseInt(minValue, 10) : parseFloat(minValue);
+                if (isNaN(parsedMin)) {
+                    showMessage('Некорректное значение "от" для параметра #' + pid, 'error');
+                    return;
+                }
+            }
+            if (maxValue) {
+                parsedMax = item.type === 'int' ? parseInt(maxValue, 10) : parseFloat(maxValue);
+                if (isNaN(parsedMax)) {
+                    showMessage('Некорректное значение "до" для параметра #' + pid, 'error');
+                    return;
+                }
+            }
+            if (parsedMin !== null && parsedMax !== null && parsedMin > parsedMax) {
+                showMessage('Диапазон "от" больше "до" для параметра #' + pid, 'error');
+                return;
+            }
+            if (parsedMin !== null) {
+                var minFilter = { parameter_definition_id: pid, operator: 'gte' };
+                if (item.type === 'int') {
+                    minFilter.value_int = parsedMin;
+                } else {
+                    minFilter.value_real = parsedMin;
+                }
+                filters.push(minFilter);
+            }
+            if (parsedMax !== null) {
+                var maxFilter = { parameter_definition_id: pid, operator: 'lte' };
+                if (item.type === 'int') {
+                    maxFilter.value_int = parsedMax;
+                } else {
+                    maxFilter.value_real = parsedMax;
+                }
+                filters.push(maxFilter);
+            }
+        }
     }
 
     apiRequest(apiUrls.filterProductsByParams + state.selectedCategoryId + '/filter/', {
@@ -1501,6 +1703,30 @@ function handleDocumentClick(e) {
     if (openProductBtn) {
         setActiveTab('tab-product');
         loadProductCard(parseInt(openProductBtn.getAttribute('data-id'), 10), openProductBtn.getAttribute('data-name'));
+        return;
+    }
+
+    var inlineAddBtn = e.target.closest('#paramAddInlineBtn');
+    if (inlineAddBtn) {
+        if (!isAdmin) {
+            showMessage('Доступно только администратору', 'error');
+            return;
+        }
+        activateTab('tab-params');
+        resetParamForm();
+        if (paramNameInput) paramNameInput.focus();
+        return;
+    }
+
+    var productAddBtn = e.target.closest('#productAddParamBtn');
+    if (productAddBtn) {
+        if (!isAdmin) {
+            showMessage('Доступно только администратору', 'error');
+            return;
+        }
+        activateTab('tab-params');
+        resetParamForm();
+        if (paramNameInput) paramNameInput.focus();
         return;
     }
 
@@ -1567,8 +1793,11 @@ function handleDocumentClick(e) {
     if (enumMoveUpBtn && state.selectedEnumDefinitionId) {
         var indexUp = parseInt(enumMoveUpBtn.getAttribute('data-index'), 10);
         if (indexUp > 0) {
-            var prevId = state.currentEnumValues[indexUp - 1].id;
-            reorderEnumValue(parseInt(enumMoveUpBtn.getAttribute('data-id'), 10), prevId);
+            var targetId = null;
+            if (indexUp > 1) {
+                targetId = state.currentEnumValues[indexUp - 2].id;
+            }
+            reorderEnumValue(parseInt(enumMoveUpBtn.getAttribute('data-id'), 10), targetId);
         }
         return;
     }
@@ -1653,6 +1882,13 @@ if (searchLoadParamsBtn) searchLoadParamsBtn.onclick = renderSearchFilters;
 if (searchRunBtn) searchRunBtn.onclick = runProductSearch;
 
 document.addEventListener('click', handleDocumentClick);
+if (treeContainer) {
+    treeContainer.addEventListener('dragstart', handleDragStart);
+    treeContainer.addEventListener('dragover', handleDragOver);
+    treeContainer.addEventListener('dragleave', handleDragLeave);
+    treeContainer.addEventListener('drop', handleDrop);
+    treeContainer.addEventListener('dragend', handleDragEnd);
+}
 
 toggleFields();
 toggleMoveType();

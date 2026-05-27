@@ -12,8 +12,8 @@
             <div class="sidebar-header">
                 <h1>Дерево классификатора</h1>
                 <div class="toolbar admin-only">
-                    <button id="openModalBtn">➕ Добавить вершину</button>
-                    <button id="openMoveModalBtn">✂️ Переместить вершину</button>
+                    <button id="openModalBtn">➕ Добавить</button>
+                    <button id="openMoveModalBtn">✂️ Переместить</button>
                 </div>
             </div>
             <div class="search-panel" id="searchPanel">
@@ -47,7 +47,7 @@
             <div class="topbar">
                 <div class="topbar-user">
                     Вошли как <strong>{{ user.username }}</strong>
-                    <span class="user-role" id="userRole">{{ user.role|default:"viewer" }}</span>
+                    <span class="user-role" id="userRole">{{ user.role|default:"пользователь" }}</span>
                 </div>
                 <div class="topbar-actions">
                     {% if user.is_staff or user.is_superuser %}
@@ -155,7 +155,7 @@
                     <span class="badge" id="productBadge">Изделие не выбрано</span>
                 </div>
                 <div id="productDetails">
-                    <p class="muted">Выберите товар в списке содержимого.</p>
+                    <p class="muted">Выберите изделие в списке категории.</p>
                 </div>
             </section>
 
@@ -177,15 +177,15 @@
     <div id="overlay"></div>
 
     <div id="modal" class="modal">
-        <h3>Добавить новую вершину</h3>
+        <h3>Добавить</h3>
         <form id="addForm">
             {% csrf_token %}
             <div>
                 <label>Тип вершины:</label><br>
                 <input type="radio" id="type_category" name="node_type" value="category" checked>
-                <label for="type_category">Категория (промежуточная)</label><br>
+                <label for="type_category">Категория</label><br>
                 <input type="radio" id="type_product" name="node_type" value="product">
-                <label for="type_product">Товар (терминальная)</label>
+                <label for="type_product">Товар</label>
             </div>
             <div>
                 <label for="name">Название:</label><br>
@@ -281,6 +281,9 @@
         </div>
     </div>
 
+    <script>
+        window.isAdmin = {% if user.is_staff or user.is_superuser %}true{% else %}false{% endif %};
+    </script>
     <script>
         window.apiUrls = {
             tree: '/api/tree/',
