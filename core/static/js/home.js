@@ -113,6 +113,23 @@ var dragState = {
     targetEl: null
 };
 
+function loadParamsForCategory() {
+    if (!state.selectedCategoryId) {
+        if (paramsTable) paramsTable.innerHTML = '<p class="muted">Выберите категорию.</p>';
+        return Promise.resolve([]);
+    }
+    return apiRequest(apiUrls.parametersForCategory + state.selectedCategoryId + '/')
+        .then(function(params) {
+            state.paramsCache = params || [];
+            renderParamsTable(state.paramsCache);
+            return state.paramsCache;
+        })
+        .catch(function(err) {
+            if (paramsTable) paramsTable.innerHTML = '<p class="muted">Ошибка загрузки параметров: ' + escapeHtml(err.message) + '</p>';
+            return [];
+        });
+}
+
 function escapeHtml(value) {
     return String(value || '')
         .replace(/&/g, '&amp;')
@@ -1848,6 +1865,29 @@ function runProductSearch() {
         });
 }
 
+// ========== Функции для работы с параметрами категории ==========
+function getValueTypeLabel(valueType) {
+    var map = {
+        'str': 'Строка',
+        'int': 'Целое число',
+        'real': 'Вещественное число',
+        'enum': 'Перечисление'
+    };
+    return map[valueType] || valueType;
+}
+
+function loadConstraint(paramId) {
+    return apiRequest(apiUrls.parameterConstraint + paramId + '/constraint/')
+        .then(function(data) {
+            return data || null;
+        })
+        .catch(function() {
+            return null;
+        });
+}
+
+
+
 function handleDocumentClick(e) {
     var nodeLink = e.target.closest('.node-link');
     if (nodeLink) {
@@ -2096,3 +2136,14 @@ toggleFields();
 toggleMoveType();
 fillUnitsSelect();
 loadTree();
+// Привязка кнопок поиска
+if (searchLoadParamsBtn) {
+    searchLoadParamsBtn.onclick = function() {
+        renderSearchFilters();
+    };
+}
+if (searchRunBtn) {
+    searchRunBtn.onclick = function() {
+        runProductSearch();
+    };
+}

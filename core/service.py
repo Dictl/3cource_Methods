@@ -111,26 +111,24 @@ def display_parent_product(all_base, all_base_product, node_id):
 "Поиск всех родителей"
 def search_parent_nodes(all_base, node_id):
     result_parents = []
-    current_category = None
-
-    for element in all_base:
-        if element.id == int(node_id):
-            current_category = element
+    current_id = int(node_id)
+    
+    # Преобразуем список в словарь для быстрого поиска по id
+    node_by_id = {node.id: node for node in all_base}
+    
+    while True:
+        current_node = node_by_id.get(current_id)
+        if not current_node or current_node.parent_id is None:
             break
-
-    if current_category is None:
-        return result_parents
-
-    while current_category.parent_id is not None:
-        for element in all_base:
-            if element.id == current_category.parent_id:
-                result_parents.append(element)
-                current_category = element
-                break
-
+        parent_node = node_by_id.get(current_node.parent_id)
+        if not parent_node:
+            # Если родитель не найден, выходим, чтобы не зациклиться
+            break
+        result_parents.append(parent_node)
+        current_id = parent_node.id
+    
     return result_parents
 
-"Добавление еще одной категории в classifier_node. Нельзя добавить с таким же имененм, к терминальному узлу"
 def add_category(name, parent_id, unit):
     if ClassifierNode.objects.filter(name=name).exists():
         raise ValueError(f"Категория с именем '{name}' уже существует")
