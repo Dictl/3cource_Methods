@@ -9,7 +9,7 @@ from core.models import (
 )
 from django.db import connection
 from django.views.decorators.csrf import csrf_exempt
-from .permissions import admin_required, viewer_or_admin
+from .permissions import admin_required, viewer_or_admin, viewer_allowed
 
 from .service import (
     add_category,
@@ -511,7 +511,7 @@ def api_create_enum_definition(request):
 "Добавление нового значения перечисления (enum_value) в выбранное перечисление (enum_definition)"
 @csrf_exempt
 @require_http_methods(["POST"])
-@admin_required
+@viewer_allowed
 def api_add_enum_value(request):
     try:
         payload = _parse_json(request)
@@ -546,7 +546,7 @@ def api_add_enum_value(request):
 "Удалить значение перечисления (enum_value) по его id"
 @csrf_exempt
 @require_http_methods(["DELETE"])
-@admin_required
+@viewer_allowed
 def api_delete_enum_value(request):
     try:
         payload = _parse_json(request)
@@ -578,7 +578,7 @@ def api_delete_enum_definition(request):
 "Изменить порядок enum_value внутри одного перечисления (enum_definition)"
 @csrf_exempt
 @require_http_methods(["PUT"])
-@admin_required
+@viewer_allowed
 def api_reorder_enum_value(request):
     try:
         payload = _parse_json(request)
@@ -601,7 +601,7 @@ def api_reorder_enum_value(request):
 "Назначить значение перечисления (enum_value) товару (product)"
 @csrf_exempt
 @require_http_methods(["POST"])
-@admin_required
+@viewer_allowed
 def api_assign_enum_value_to_product(request):
     try:
         payload = _parse_json(request)
@@ -661,7 +661,7 @@ def api_product_enums(request, product_id):
 "Удалить аттрибут товара (product_attribute_value) по id"
 @csrf_exempt
 @require_http_methods(["DELETE"])
-@admin_required
+@viewer_allowed
 def api_delete_product_attribute(request):
     try:
         payload = _parse_json(request)
@@ -793,7 +793,7 @@ def api_delete_unit(request, unit_id):
 "Создать значение параметра для товара (product_parameter_value), поддержка строковых, числовых и enum"
 @csrf_exempt
 @require_http_methods(["POST"])
-@admin_required
+@viewer_allowed
 def api_create_product_parameter_value(request):
     try:
         payload = _parse_json(request)
@@ -830,7 +830,7 @@ def api_create_product_parameter_value(request):
 "Обновить значение параметра для товара (product_parameter_value) по id"
 @csrf_exempt
 @require_http_methods(["PUT"])
-@admin_required
+@viewer_allowed
 def api_update_product_parameter_value(request):
     try:
         payload = _parse_json(request)
@@ -859,7 +859,7 @@ def api_update_product_parameter_value(request):
 "Удалить значение параметра для товара (product_parameter_value) по id"
 @csrf_exempt
 @require_http_methods(["DELETE"])
-@admin_required
+@viewer_allowed
 def api_delete_product_parameter_value(request, ppv_id):
     try:
         delete_product_parameter_value(ppv_id)

@@ -34,3 +34,22 @@ def viewer_or_admin(view_func):
         return view_func(request, *args, **kwargs)
 
     return wrapper
+
+
+def viewer_allowed(view_func):
+    """Decorator to allow viewers and admins (viewers can perform content editing without changing structure)"""
+    @wraps(view_func)
+    def wrapper(request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return JsonResponse(
+                {"ok": False, "error": "Authentication required"},
+                status=401
+            )
+
+        # Check if user has viewer or admin role
+        if not request.user.groups.filter(name__in=['Viewers', 'Admins']).exists():
+            return JsonResponse({"ok": False, "error": "Viewer privileges required"}, status=403)
+
+        return view_func(request, *args, **kwargs)
+
+    return wrapper
