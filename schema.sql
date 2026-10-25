@@ -138,7 +138,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_check_numeric_constraint
+CREATE OR REPLACE TRIGGER trg_check_numeric_constraint
 BEFORE INSERT OR UPDATE ON product_parameter_value
 FOR EACH ROW
 EXECUTE FUNCTION check_numeric_constraint();
@@ -180,7 +180,8 @@ FROM node_ancestors na
 JOIN parameter_definition pd ON pd.classifier_node_id = na.ancestor_id
 ORDER BY na.node_id, pd.sort_order;
 
--- Триггер на запрет дублирования имён параметров в цепочке наследования
+-- Триггер на запрет дублирования имён параметров в цепочке наследования.
+-- Дубль внутри того же узла ловит UNIQUE (classifier_node_id, name), поэтому сиды с ON CONFLICT можно перезапускать
 CREATE OR REPLACE FUNCTION prevent_duplicate_inherited_param()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -189,6 +190,7 @@ BEGIN
         WHERE classifier_node_id = NEW.classifier_node_id
           AND name = NEW.name
           AND parameter_definition_id != NEW.id
+          AND defined_at_node_id != NEW.classifier_node_id
     ) THEN
         RAISE EXCEPTION 'Параметр с именем "%" уже существует для этого узла или унаследован от родителя', NEW.name;
     END IF;
@@ -196,7 +198,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_prevent_duplicate_inherited_param
+CREATE OR REPLACE TRIGGER trg_prevent_duplicate_inherited_param
 BEFORE INSERT OR UPDATE ON parameter_definition
 FOR EACH ROW
 EXECUTE FUNCTION prevent_duplicate_inherited_param();
@@ -249,11 +251,11 @@ GROUP BY nd.ancestor_id, ppv.parameter_definition_id, ppv.param_name, ppv.value_
 ORDER BY nd.ancestor_id, ppv.param_name;
 
 -- Создаём материализованное представление
-CREATE MATERIALIZED VIEW mv_parameter_aggregates AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_parameter_aggregates AS
 SELECT * FROM v_parameter_aggregates;
 
 -- Уникальный индекс для быстрого обновления
-CREATE UNIQUE INDEX mv_parameter_aggregates_pk ON mv_parameter_aggregates (classifier_node_id, parameter_definition_id);
+CREATE UNIQUE INDEX IF NOT EXISTS mv_parameter_aggregates_pk ON mv_parameter_aggregates (classifier_node_id, parameter_definition_id);
 
 -- Обновляем данные
 REFRESH MATERIALIZED VIEW mv_parameter_aggregates;
@@ -278,7 +280,7 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER refresh_aggregates_on_change
+CREATE OR REPLACE TRIGGER refresh_aggregates_on_change
 AFTER INSERT OR UPDATE OR DELETE ON product_parameter_value
 EXECUTE FUNCTION trigger_refresh_aggregates();
 */
@@ -315,10 +317,38 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_check_parameter_belongs
+CREATE OR REPLACE TRIGGER trg_check_parameter_belongs
 BEFORE INSERT OR UPDATE ON product_parameter_value
 FOR EACH ROW
 EXECUTE FUNCTION check_parameter_belongs_to_product_class();
+
+-- =====================================================
+-- 8. Начальные данные
+-- =====================================================
+
+-- Сиды вставляют явные id, а сервис выдаёт id как MAX(id) + 1,
+-- поэтому SERIAL-последовательности отстают. Подтягиваем их к MAX(id) во всех таблицах схемы.
+CREATE OR REPLACE FUNCTION sync_id_sequences()
+RETURNS void AS $$
+DECLARE
+    v_table TEXT;
+BEGIN
+    FOR v_table IN
+        SELECT table_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND column_name = 'id'
+          AND column_default LIKE 'nextval(%'
+    LOOP
+        EXECUTE format(
+            'SELECT setval(pg_get_serial_sequence(%L, ''id''), COALESCE(MAX(id), 0) + 1, FALSE) FROM %I',
+            quote_ident(v_table), v_table
+        );
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql;
+
+SELECT sync_id_sequences();
 
 INSERT INTO classifier_node (id, parent_id, name, unit, sort_order) VALUES
 (1, NULL, 'Колбасное изделие', 'грамм', 0),
@@ -359,8 +389,9 @@ INSERT INTO enum_definition (id, classifier_node_id, description) VALUES
     (4, 3, 'Температура копчения')
 ON CONFLICT (classifier_node_id) DO NOTHING;
 
-INSERT INTO enum_value (enum_definition_id, value_str, value_int, value_real, sort_order) VALUES
-    (1, 'Гомогенная',    NULL, NULL, 1),
+INSERT INTO enum_value (enum_definition_id, value_str, value_int, value_real, sort_order)
+SELECT v.* FROM (VALUES
+    (1, 'Гомогенная',    NULL::INTEGER, NULL::FLOAT, 1),
     (1, 'Со шпиком',  NULL, NULL, 2),
     (1, 'С кусочками',   NULL, NULL, 3),
     (2, 'Перекрут', NULL, NULL, 1),
@@ -374,13 +405,25 @@ INSERT INTO enum_value (enum_definition_id, value_str, value_int, value_real, so
     (4, 'Холодное',     25, NULL, 1),
     (4, 'Тёплое', 50, NULL, 2),
     (4, 'Горячее', 120, NULL, 3)
-ON CONFLICT (id) DO NOTHING;
+) v(enum_definition_id, value_str, value_int, value_real, sort_order)
+WHERE NOT EXISTS (
+    SELECT 1 FROM enum_value ev
+    WHERE ev.enum_definition_id = v.enum_definition_id AND ev.value_str = v.value_str
+);
 
-INSERT INTO product_attribute_value (product_id, enum_value_id) VALUES
-    (1, (SELECT id FROM enum_value WHERE enum_definition_id = 1 AND value_str = 'Гомогенная')),
-    (1, (SELECT id FROM enum_value WHERE enum_definition_id = 3 AND value_str = 'Целлофан')),
-    (3, (SELECT id FROM enum_value WHERE enum_definition_id = 3 AND value_str = 'Со шпиком')),
-    (3, (SELECT id FROM enum_value WHERE enum_definition_id = 1 AND value_str = 'Целлофан'));
+INSERT INTO product_attribute_value (product_id, enum_value_id)
+SELECT v.product_id, ev.id
+FROM (VALUES
+    (1, 1, 'Гомогенная'),
+    (1, 3, 'Целлофан'),
+    (3, 1, 'Со шпиком'),
+    (3, 3, 'Целлофан')
+) v(product_id, enum_definition_id, value_str)
+JOIN enum_value ev ON ev.enum_definition_id = v.enum_definition_id AND ev.value_str = v.value_str
+WHERE NOT EXISTS (
+    SELECT 1 FROM product_attribute_value pav
+    WHERE pav.product_id = v.product_id AND pav.enum_value_id = ev.id
+);
 
 INSERT INTO unit_dimension (name) VALUES
     ('Масса'), ('Длина'), ('Температура'), ('Время'), ('Концентрация'), ('Безразмерная')
@@ -428,7 +471,7 @@ SELECT 3, 'Выдержка после копчения', id, 'int', 2 FROM unit
 ON CONFLICT DO NOTHING;
 
 INSERT INTO parameter_definition (classifier_node_id, name, unit_id, value_type, sort_order)
-SELECT 3, 'Порода древесины', NULL, 'str', 3 FROM unit WHERE symbol='сут'  -- единица не используется
+VALUES (3, 'Порода древесины', NULL, 'str', 3)  -- единица не используется
 ON CONFLICT DO NOTHING;
 
 -- параметры для узла «Цельномышечное» (4)
@@ -464,3 +507,635 @@ ON CONFLICT DO NOTHING;
 
 -- Обновим материализованное представление вручную после вставок
 SELECT refresh_aggregates();
+
+-- =====================================================
+-- 10. Типы изделий
+-- =====================================================
+
+-- По отношению к производству: материал / комплектующее / продукция.
+-- Продукция по структуре: деталь / сборочная единица / комплект / комплекс.
+CREATE TABLE IF NOT EXISTS product_type (
+    code             VARCHAR(16) PRIMARY KEY,
+    name             TEXT        NOT NULL UNIQUE,
+    production_role  VARCHAR(16) NOT NULL CHECK (production_role IN ('material', 'purchased', 'product')),
+    can_have_bom     BOOLEAN     NOT NULL   -- материалы и комплектующие не имеют своего состава
+);
+
+INSERT INTO product_type (code, name, production_role, can_have_bom) VALUES
+    ('material',  'Материал',                 'material',  FALSE),
+    ('purchased', 'Комплектующее изделие',    'purchased', FALSE),
+    ('part',      'Деталь',                   'product',   TRUE),
+    ('assembly',  'Сборочная единица (узел)', 'product',   TRUE),
+    ('kit',       'Комплект',                 'product',   TRUE),
+    ('complex',   'Комплекс',                 'product',   TRUE)
+ON CONFLICT (code) DO NOTHING;
+
+-- =====================================================
+-- 11. Изменения спецификации и новые поля изделия
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS bom_change (
+    id           SERIAL    PRIMARY KEY,
+    product_id   INTEGER   NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+    change_no    INTEGER   NOT NULL,   -- порядковый номер изменения у изделия
+    description  TEXT      NOT NULL,
+    author       TEXT      NOT NULL DEFAULT current_user,
+    created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (product_id, change_no)
+);
+
+-- Изделие: обозначение, тип, ЕИ количества, базовое изделие (для модификаций), последнее изменение.
+-- Ограничения объявлены в самих колонках: если колонка уже есть, повторно они не создаются.
+ALTER TABLE product
+    ADD COLUMN IF NOT EXISTS designation       VARCHAR(64) UNIQUE,
+    ADD COLUMN IF NOT EXISTS product_type_code VARCHAR(16) NOT NULL DEFAULT 'part' REFERENCES product_type(code),
+    ADD COLUMN IF NOT EXISTS unit_id           INTEGER     REFERENCES unit(id),
+    ADD COLUMN IF NOT EXISTS base_product_id   INTEGER     REFERENCES product(id) ON DELETE RESTRICT
+                                                           CONSTRAINT chk_product_not_own_base CHECK (base_product_id <> id),
+    ADD COLUMN IF NOT EXISTS last_change_id    INTEGER     CONSTRAINT fk_product_last_change
+                                                           REFERENCES bom_change(id) ON DELETE SET NULL;
+
+-- Базовая ЕИ класса: в ней сводятся нормы расхода по классу
+ALTER TABLE classifier_node
+    ADD COLUMN IF NOT EXISTS base_unit_id INTEGER REFERENCES unit(id);
+
+-- =====================================================
+-- 12. Материальная спецификация (BOM)
+-- =====================================================
+
+-- Норма расхода = quantity / per_quantity на единицу родителя.
+-- is_base (флаг базы) бывает только у модификаций: норма берётся из базового изделия.
+CREATE TABLE IF NOT EXISTS bom_item (
+    id                 SERIAL        PRIMARY KEY,
+    parent_product_id  INTEGER       NOT NULL REFERENCES product(id) ON DELETE CASCADE,
+    component_id       INTEGER       NOT NULL REFERENCES product(id) ON DELETE RESTRICT,
+    position_no        INTEGER       NOT NULL DEFAULT 0,
+    quantity           NUMERIC(18,6) NOT NULL CHECK (quantity > 0),
+    per_quantity       NUMERIC(18,6) NOT NULL DEFAULT 1 CHECK (per_quantity > 0),
+    unit_id            INTEGER       NOT NULL REFERENCES unit(id),
+    is_base            BOOLEAN       NOT NULL DEFAULT FALSE,
+
+    UNIQUE (parent_product_id, component_id),
+    CHECK (parent_product_id <> component_id)
+);
+
+CREATE INDEX IF NOT EXISTS ix_bom_item_component ON bom_item (component_id);
+
+-- Журнал правок состава, заполняется триггером
+CREATE TABLE IF NOT EXISTS bom_change_log (
+    id                 BIGSERIAL     PRIMARY KEY,
+    change_id          INTEGER       REFERENCES bom_change(id) ON DELETE SET NULL,
+    parent_product_id  INTEGER       NOT NULL,   -- без FK, чтобы журнал переживал удаление позиции
+    component_id       INTEGER       NOT NULL,
+    operation          VARCHAR(8)    NOT NULL CHECK (operation IN ('add', 'update', 'remove')),
+    old_quantity       NUMERIC(18,6),
+    new_quantity       NUMERIC(18,6),
+    old_per_quantity   NUMERIC(18,6),
+    new_per_quantity   NUMERIC(18,6),
+    old_unit_id        INTEGER,
+    new_unit_id        INTEGER,
+    old_is_base        BOOLEAN,
+    new_is_base        BOOLEAN,
+    changed_by         TEXT          NOT NULL DEFAULT current_user,
+    changed_at         TIMESTAMP     NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS ix_bom_change_log_parent ON bom_change_log (parent_product_id, changed_at);
+
+-- =====================================================
+-- 13. Перевод единиц и действующий состав
+-- =====================================================
+
+-- Перевод значения между ЕИ одной размерности
+CREATE OR REPLACE FUNCTION unit_convert(p_value NUMERIC, p_from_unit INTEGER, p_to_unit INTEGER)
+RETURNS NUMERIC AS $$
+DECLARE
+    v_from unit%ROWTYPE;
+    v_to   unit%ROWTYPE;
+BEGIN
+    IF p_value IS NULL OR p_from_unit IS NULL OR p_to_unit IS NULL OR p_from_unit = p_to_unit THEN
+        RETURN p_value;
+    END IF;
+
+    SELECT * INTO v_from FROM unit WHERE id = p_from_unit;
+    SELECT * INTO v_to   FROM unit WHERE id = p_to_unit;
+
+    IF v_from.dimension_id IS DISTINCT FROM v_to.dimension_id THEN
+        RAISE EXCEPTION 'Нельзя перевести «%» в «%»: разные размерности', v_from.symbol, v_to.symbol;
+    END IF;
+
+    RETURN (p_value * v_from.to_base_factor + v_from.to_base_offset - v_to.to_base_offset) / v_to.to_base_factor;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- Состав первого уровня с учётом модификаций: свои позиции + позиции с флагом базы,
+-- нормы которых берутся из базового изделия (рекурсивно по цепочке баз)
+CREATE OR REPLACE FUNCTION bom_effective(p_product_id INTEGER)
+RETURNS TABLE (
+    bom_item_id   INTEGER,
+    component_id  INTEGER,
+    position_no   INTEGER,
+    quantity      NUMERIC,
+    per_quantity  NUMERIC,
+    unit_id       INTEGER,
+    is_base       BOOLEAN
+) AS $$
+#variable_conflict use_column
+DECLARE
+    v_base INTEGER;
+BEGIN
+    SELECT p.base_product_id INTO v_base FROM product p WHERE p.id = p_product_id;
+
+    RETURN QUERY
+    SELECT b.id, b.component_id, b.position_no, b.quantity::NUMERIC, b.per_quantity::NUMERIC, b.unit_id, FALSE
+    FROM bom_item b
+    WHERE b.parent_product_id = p_product_id AND NOT b.is_base;
+
+    IF v_base IS NOT NULL THEN
+        RETURN QUERY
+        SELECT own.id, base.component_id, own.position_no, base.quantity, base.per_quantity, base.unit_id, TRUE
+        FROM bom_item own
+        JOIN bom_effective(v_base) base ON base.component_id = own.component_id
+        WHERE own.parent_product_id = p_product_id AND own.is_base;
+    END IF;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- =====================================================
+-- 14. Триггеры спецификации
+-- =====================================================
+
+-- Проверка позиции: тип родителя, размерность ЕИ, флаг базы, отсутствие циклов
+CREATE OR REPLACE FUNCTION check_bom_item()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_parent_type     product_type%ROWTYPE;
+    v_base            INTEGER;
+    v_component_unit  INTEGER;
+BEGIN
+    SELECT pt.* INTO v_parent_type
+    FROM product p
+    JOIN product_type pt ON pt.code = p.product_type_code
+    WHERE p.id = NEW.parent_product_id;
+
+    IF NOT v_parent_type.can_have_bom THEN
+        RAISE EXCEPTION 'Изделие типа «%» не может иметь состав', v_parent_type.name;
+    END IF;
+
+    SELECT unit_id INTO v_component_unit FROM product WHERE id = NEW.component_id;
+
+    IF v_component_unit IS NOT NULL AND NOT EXISTS (
+        SELECT 1
+        FROM unit a
+        JOIN unit b ON a.dimension_id = b.dimension_id
+        WHERE a.id = NEW.unit_id AND b.id = v_component_unit
+    ) THEN
+        RAISE EXCEPTION 'ЕИ нормы (unit_id=%) не совпадает по размерности с ЕИ компонента (unit_id=%)',
+                        NEW.unit_id, v_component_unit;
+    END IF;
+
+    -- Отредактированная унаследованная позиция становится собственной
+    IF TG_OP = 'UPDATE' AND OLD.is_base AND NEW.is_base
+       AND (NEW.quantity, NEW.per_quantity, NEW.unit_id) IS DISTINCT FROM (OLD.quantity, OLD.per_quantity, OLD.unit_id) THEN
+        NEW.is_base := FALSE;
+    END IF;
+
+    IF NEW.is_base THEN
+        SELECT base_product_id INTO v_base FROM product WHERE id = NEW.parent_product_id;
+
+        IF v_base IS NULL THEN
+            RAISE EXCEPTION 'Флаг базы допустим только у модификаций (изделие % не имеет базового)', NEW.parent_product_id;
+        END IF;
+
+        IF NOT EXISTS (SELECT 1 FROM bom_effective(v_base) e WHERE e.component_id = NEW.component_id) THEN
+            RAISE EXCEPTION 'Компонент % отсутствует в спецификации базового изделия %', NEW.component_id, v_base;
+        END IF;
+    END IF;
+
+    -- Родитель не должен входить в состав компонента на любой глубине
+    IF EXISTS (
+        WITH RECURSIVE sub AS (
+            SELECT NEW.component_id AS id
+
+            UNION
+
+            SELECT b.component_id
+            FROM bom_item b
+            JOIN sub ON b.parent_product_id = sub.id
+        )
+        SELECT 1 FROM sub WHERE id = NEW.parent_product_id
+    ) THEN
+        RAISE EXCEPTION 'Изделие % уже входит в состав компонента % — получится цикл',
+                        NEW.parent_product_id, NEW.component_id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER trg_check_bom_item
+BEFORE INSERT OR UPDATE ON bom_item
+FOR EACH ROW
+EXECUTE FUNCTION check_bom_item();
+
+-- Проверка изделия: тип без состава и замкнутая цепочка базовых изделий
+CREATE OR REPLACE FUNCTION check_product_bom_rules()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NOT (SELECT can_have_bom FROM product_type WHERE code = NEW.product_type_code)
+       AND EXISTS (SELECT 1 FROM bom_item WHERE parent_product_id = NEW.id) THEN
+        RAISE EXCEPTION 'Изделие % имеет состав, тип «%» недопустим', NEW.id, NEW.product_type_code;
+    END IF;
+
+    IF NEW.base_product_id IS NOT NULL AND EXISTS (
+        WITH RECURSIVE chain AS (
+            SELECT NEW.base_product_id AS id
+
+            UNION
+
+            SELECT p.base_product_id
+            FROM product p
+            JOIN chain c ON p.id = c.id
+            WHERE p.base_product_id IS NOT NULL
+        )
+        SELECT 1 FROM chain WHERE id = NEW.id
+    ) THEN
+        RAISE EXCEPTION 'Изделие % не может быть модификацией своей же модификации', NEW.id;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER trg_check_product_bom_rules
+BEFORE INSERT OR UPDATE OF product_type_code, base_product_id ON product
+FOR EACH ROW
+EXECUTE FUNCTION check_product_bom_rules();
+
+-- Позицию убрали из базового изделия — убираем её унаследованные копии у модификаций
+CREATE OR REPLACE FUNCTION propagate_bom_delete_to_modifications()
+RETURNS TRIGGER AS $$
+BEGIN
+    DELETE FROM bom_item b
+    USING product m
+    WHERE m.base_product_id = OLD.parent_product_id
+      AND b.parent_product_id = m.id
+      AND b.component_id = OLD.component_id
+      AND b.is_base;
+
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER trg_propagate_bom_delete
+AFTER DELETE ON bom_item
+FOR EACH ROW
+EXECUTE FUNCTION propagate_bom_delete_to_modifications();
+
+-- Журналирование правок; изменение берётся из bom.change_id (его ставит register_change)
+CREATE OR REPLACE FUNCTION log_bom_change()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_row        bom_item%ROWTYPE;
+    v_change_id  INTEGER;
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        v_row := OLD;
+    ELSE
+        v_row := NEW;
+    END IF;
+
+    -- Изделие удалено целиком: его история удаляется каскадом
+    IF NOT EXISTS (SELECT 1 FROM product WHERE id = v_row.parent_product_id) THEN
+        RETURN NULL;
+    END IF;
+
+    SELECT id INTO v_change_id
+    FROM bom_change
+    WHERE id = NULLIF(current_setting('bom.change_id', TRUE), '')::INTEGER
+      AND product_id = v_row.parent_product_id;
+
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO bom_change_log (change_id, parent_product_id, component_id, operation,
+                                    new_quantity, new_per_quantity, new_unit_id, new_is_base)
+        VALUES (v_change_id, NEW.parent_product_id, NEW.component_id, 'add',
+                NEW.quantity, NEW.per_quantity, NEW.unit_id, NEW.is_base);
+    ELSIF TG_OP = 'UPDATE' THEN
+        INSERT INTO bom_change_log (change_id, parent_product_id, component_id, operation,
+                                    old_quantity, new_quantity, old_per_quantity, new_per_quantity,
+                                    old_unit_id, new_unit_id, old_is_base, new_is_base)
+        VALUES (v_change_id, NEW.parent_product_id, NEW.component_id, 'update',
+                OLD.quantity, NEW.quantity, OLD.per_quantity, NEW.per_quantity,
+                OLD.unit_id, NEW.unit_id, OLD.is_base, NEW.is_base);
+    ELSE
+        INSERT INTO bom_change_log (change_id, parent_product_id, component_id, operation,
+                                    old_quantity, old_per_quantity, old_unit_id, old_is_base)
+        VALUES (v_change_id, OLD.parent_product_id, OLD.component_id, 'remove',
+                OLD.quantity, OLD.per_quantity, OLD.unit_id, OLD.is_base);
+    END IF;
+
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE TRIGGER trg_log_bom_change
+AFTER INSERT OR UPDATE OR DELETE ON bom_item
+FOR EACH ROW
+EXECUTE FUNCTION log_bom_change();
+
+-- =====================================================
+-- 15. Процедуры бизнес-логики
+-- =====================================================
+
+-- REGISTER_CHANGE: регистрирует изменение и делает его текущим для сеанса,
+-- последующие правки состава этого изделия попадут в журнал с этим изменением
+CREATE OR REPLACE FUNCTION register_change(p_id_prod INTEGER, p_change_desc TEXT)
+RETURNS INTEGER AS $$
+DECLARE
+    v_id INTEGER;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM product WHERE id = p_id_prod) THEN
+        RAISE EXCEPTION 'Нет изделия %', p_id_prod;
+    END IF;
+
+    IF COALESCE(TRIM(p_change_desc), '') = '' THEN
+        RAISE EXCEPTION 'Нужно описание изменения';
+    END IF;
+
+    INSERT INTO bom_change (product_id, change_no, description)
+    VALUES (
+        p_id_prod,
+        (SELECT COALESCE(MAX(change_no), 0) + 1 FROM bom_change WHERE product_id = p_id_prod),
+        p_change_desc
+    )
+    RETURNING id INTO v_id;
+
+    UPDATE product SET last_change_id = v_id WHERE id = p_id_prod;
+    PERFORM set_config('bom.change_id', v_id::TEXT, FALSE);
+
+    RETURN v_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- CREATE_MODIFICATION: новое изделие на основе базового,
+-- базовая спецификация копируется с флагом базы
+CREATE OR REPLACE FUNCTION create_modification(p_id_base INTEGER, p_name VARCHAR, p_designation VARCHAR DEFAULT NULL)
+RETURNS INTEGER AS $$
+DECLARE
+    v_base  product%ROWTYPE;
+    v_id    INTEGER;
+BEGIN
+    SELECT * INTO v_base FROM product WHERE id = p_id_base;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Нет базового изделия %', p_id_base;
+    END IF;
+
+    INSERT INTO product (classifier_node_id, sku, name, price, supplier, weight_gram,
+                         designation, product_type_code, unit_id, base_product_id)
+    VALUES (v_base.classifier_node_id, NULL, p_name, v_base.price, v_base.supplier, v_base.weight_gram,
+            p_designation, v_base.product_type_code, v_base.unit_id, p_id_base)
+    RETURNING id INTO v_id;
+
+    PERFORM register_change(v_id, format('Создана модификация изделия %s «%s»', p_id_base, v_base.name));
+
+    INSERT INTO bom_item (parent_product_id, component_id, position_no, quantity, per_quantity, unit_id, is_base)
+    SELECT v_id, e.component_id, e.position_no, e.quantity, e.per_quantity, e.unit_id, TRUE
+    FROM bom_effective(p_id_base) e;
+
+    RETURN v_id;
+END;
+$$ LANGUAGE plpgsql;
+
+-- FIND_BOM: дерево состава на всю глубину.
+-- norm — норма на единицу родителя, total_quantity — расход на 1 изделие верхнего уровня в ЕИ компонента
+CREATE OR REPLACE FUNCTION find_bom(p_id_prod INTEGER)
+RETURNS TABLE (
+    lvl                INTEGER,
+    parent_product_id  INTEGER,
+    component_id       INTEGER,
+    designation        VARCHAR,
+    name               TEXT,
+    product_type_code  VARCHAR,
+    classifier_node_id INTEGER,
+    norm               NUMERIC,
+    norm_unit          VARCHAR,
+    total_quantity     NUMERIC,
+    total_unit_id      INTEGER,
+    total_unit         VARCHAR,
+    is_base            BOOLEAN,
+    path               INTEGER[]
+) AS $$
+    WITH RECURSIVE tree AS (
+        -- Базовый случай: состав самого изделия
+        SELECT
+            1 AS lvl,
+            p_id_prod AS parent_product_id,
+            e.component_id,
+            e.quantity / e.per_quantity AS norm,
+            e.unit_id AS norm_unit_id,
+            unit_convert(e.quantity / e.per_quantity, e.unit_id, COALESCE(c.unit_id, e.unit_id)) AS total_quantity,
+            COALESCE(c.unit_id, e.unit_id) AS total_unit_id,
+            e.is_base,
+            ARRAY[p_id_prod, e.component_id] AS path,
+            ARRAY[e.position_no, e.component_id] AS sort_key
+        FROM bom_effective(p_id_prod) e
+        JOIN product c ON c.id = e.component_id
+
+        UNION ALL
+
+        -- Спускаемся в состав компонентов
+        SELECT
+            t.lvl + 1,
+            t.component_id,
+            e.component_id,
+            e.quantity / e.per_quantity,
+            e.unit_id,
+            t.total_quantity * unit_convert(e.quantity / e.per_quantity, e.unit_id, COALESCE(c.unit_id, e.unit_id)),
+            COALESCE(c.unit_id, e.unit_id),
+            e.is_base,
+            t.path || e.component_id,
+            t.sort_key || ARRAY[e.position_no, e.component_id]
+        FROM tree t
+        CROSS JOIN LATERAL bom_effective(t.component_id) e
+        JOIN product c ON c.id = e.component_id
+        WHERE e.component_id <> ALL (t.path)
+    )
+    SELECT
+        t.lvl,
+        t.parent_product_id,
+        t.component_id,
+        c.designation,
+        c.name,
+        c.product_type_code,
+        c.classifier_node_id,
+        trim_scale(t.norm),
+        nu.symbol,
+        trim_scale(t.total_quantity),
+        t.total_unit_id,
+        tu.symbol,
+        t.is_base,
+        t.path
+    FROM tree t
+    JOIN product c  ON c.id  = t.component_id
+    JOIN unit    nu ON nu.id = t.norm_unit_id
+    JOIN unit    tu ON tu.id = t.total_unit_id
+    ORDER BY t.sort_key;
+$$ LANGUAGE sql STABLE;
+
+-- CALC_BOM: сводные нормы расхода на p_q изделий.
+-- p_id_class = NULL — все ресурсы нижнего уровня, иначе — компоненты класса и его подклассов
+CREATE OR REPLACE FUNCTION calc_bom(p_id_prod INTEGER, p_q DOUBLE PRECISION DEFAULT 1, p_id_class INTEGER DEFAULT NULL)
+RETURNS TABLE (
+    component_id       INTEGER,
+    designation        VARCHAR,
+    name               TEXT,
+    classifier_node_id INTEGER,
+    class_name         TEXT,
+    product_type_code  VARCHAR,
+    total_quantity     NUMERIC,
+    unit               VARCHAR,
+    total_cost         NUMERIC
+) AS $$
+    WITH RECURSIVE class_tree AS (
+        SELECT id FROM classifier_node WHERE id = p_id_class
+
+        UNION ALL
+
+        SELECT cn.id
+        FROM classifier_node cn
+        JOIN class_tree ct ON cn.parent_id = ct.id
+    )
+    SELECT
+        f.component_id,
+        f.designation,
+        f.name,
+        f.classifier_node_id,
+        cn.name,
+        f.product_type_code,
+        trim_scale(SUM(f.total_quantity) * p_q::NUMERIC),
+        f.total_unit,
+        ROUND(SUM(f.total_quantity) * p_q::NUMERIC * c.price, 2)   -- цена за ЕИ количества изделия
+    FROM find_bom(p_id_prod) f
+    JOIN product c          ON c.id  = f.component_id
+    JOIN classifier_node cn ON cn.id = f.classifier_node_id
+    WHERE CASE
+        WHEN p_id_class IS NULL THEN NOT EXISTS (SELECT 1 FROM bom_effective(f.component_id))
+        ELSE f.classifier_node_id IN (SELECT id FROM class_tree)
+    END
+    GROUP BY f.component_id, f.designation, f.name, f.classifier_node_id, cn.name,
+             f.product_type_code, f.total_unit, c.price
+    ORDER BY cn.name, f.name;
+$$ LANGUAGE sql STABLE;
+
+-- Сводные нормы по классам ресурсов; количество приводится к базовой ЕИ класса, если она подходит
+CREATE OR REPLACE FUNCTION calc_bom_by_class(p_id_prod INTEGER, p_q DOUBLE PRECISION DEFAULT 1)
+RETURNS TABLE (
+    classifier_node_id INTEGER,
+    class_name         TEXT,
+    total_quantity     NUMERIC,
+    unit               VARCHAR,
+    total_cost         NUMERIC
+) AS $$
+    SELECT
+        r.classifier_node_id,
+        r.class_name,
+        trim_scale(SUM(unit_convert(r.total_quantity, u.id, COALESCE(bu.id, u.id)))),
+        COALESCE(bu.symbol, u.symbol),
+        SUM(r.total_cost)
+    FROM calc_bom(p_id_prod, p_q) r
+    JOIN unit u             ON u.symbol = r.unit
+    JOIN classifier_node cn ON cn.id = r.classifier_node_id
+    LEFT JOIN unit bu       ON bu.id = cn.base_unit_id AND bu.dimension_id = u.dimension_id
+    GROUP BY r.classifier_node_id, r.class_name, COALESCE(bu.symbol, u.symbol)
+    ORDER BY r.class_name;
+$$ LANGUAGE sql STABLE;
+
+-- =====================================================
+-- 16. Пример спецификации: фарш, колбаса, набор, модификация
+-- =====================================================
+
+INSERT INTO unit (dimension_id, name, symbol, to_base_factor, to_base_offset) VALUES
+    (1, 'тонна', 'т', 1000000, 0),
+    (2, 'метр',  'м', 1000,    0)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO classifier_node (id, parent_id, name, unit, sort_order) VALUES
+(21, NULL, 'Сырьё и материалы',  'кг', 10),
+(22, 21, 'Мясное сырьё',  'кг', 1),
+(23, 21, 'Специи и добавки',  'кг', 2),
+(24, 21, 'Оболочка и упаковка',  NULL, 3),
+(25, NULL, 'Полуфабрикаты',  'кг', 11),
+(26, NULL, 'Наборы',  'шт', 12)
+ON CONFLICT DO NOTHING;
+
+UPDATE classifier_node SET base_unit_id = (SELECT id FROM unit WHERE symbol = 'кг')
+WHERE id IN (21, 22, 23, 25) AND base_unit_id IS NULL;
+
+INSERT INTO product (id, classifier_node_id, sku, name, price, supplier, weight_gram, designation, product_type_code, unit_id) VALUES
+(7, 22, NULL, 'Говядина жилованная высшего сорта', 650, 'ООО «Мираторг»', 1000, 'СР-01.001', 'material', (SELECT id FROM unit WHERE symbol = 'кг')),
+(8, 22, NULL, 'Свинина жилованная полужирная', 420, 'ООО «Мираторг»', 1000, 'СР-01.002', 'material', (SELECT id FROM unit WHERE symbol = 'кг')),
+(9, 23, NULL, 'Молоко сухое обезжиренное', 310, 'АО «Молочный союз»', 1000, 'СР-02.001', 'material', (SELECT id FROM unit WHERE symbol = 'кг')),
+(10, 23, NULL, 'Соль нитритная', 60, 'ООО «Галит»', 1000, 'СР-02.002', 'material', (SELECT id FROM unit WHERE symbol = 'кг')),
+(11, 23, NULL, 'Мускатный орех молотый', 2400, 'ООО «Пряности»', 1000, 'СР-02.003', 'material', (SELECT id FROM unit WHERE symbol = 'кг')),
+(12, 24, NULL, 'Оболочка полиамидная Ø60', 35, 'ООО «Атлантис-Пак»', 20, 'УП-01.001', 'purchased', (SELECT id FROM unit WHERE symbol = 'м')),
+(13, 24, NULL, 'Клипса алюминиевая', 1, 'ООО «Поли-клип»', 1, 'УП-01.002', 'purchased', (SELECT id FROM unit WHERE symbol = 'шт')),
+(14, 25, NULL, 'Фарш «Докторский»', 0, 'Собственное производство', 1000, 'ПФ-01.001', 'part', (SELECT id FROM unit WHERE symbol = 'кг')),
+(15, 26, NULL, 'Набор «Мясная классика»', 1100, 'Собственное производство', 1150, 'НБ-01.001', 'kit', (SELECT id FROM unit WHERE symbol = 'шт'))
+ON CONFLICT DO NOTHING;
+
+SELECT sync_id_sequences();
+
+-- Готовые колбасы учитываются в штуках, докторская — сборочная единица (фарш + оболочка + клипсы)
+UPDATE product SET unit_id = (SELECT id FROM unit WHERE symbol = 'шт') WHERE id BETWEEN 1 AND 6 AND unit_id IS NULL;
+UPDATE product SET product_type_code = 'assembly', designation = 'КЛ-01.001' WHERE id = 1 AND designation IS NULL;
+
+DO $$
+DECLARE
+    v_mod INTEGER;
+BEGIN
+    -- Пример уже загружен
+    IF EXISTS (SELECT 1 FROM bom_item WHERE parent_product_id IN (1, 14, 15)) THEN
+        RETURN;
+    END IF;
+
+    -- Рецептура фарша на 100 кг
+    PERFORM register_change(14, 'Утверждена рецептура фарша «Докторский»');
+    INSERT INTO bom_item (parent_product_id, component_id, position_no, quantity, per_quantity, unit_id) VALUES
+        (14, 7,  1, 25,   100, (SELECT id FROM unit WHERE symbol = 'кг')),
+        (14, 8,  2, 70,   100, (SELECT id FROM unit WHERE symbol = 'кг')),
+        (14, 9,  3, 2,    100, (SELECT id FROM unit WHERE symbol = 'кг')),
+        (14, 10, 4, 2100, 100, (SELECT id FROM unit WHERE symbol = 'г')),
+        (14, 11, 5, 50,   100, (SELECT id FROM unit WHERE symbol = 'г'));
+
+    -- Батон 400 г: фарш с учётом потерь, оболочка, 2 клипсы
+    PERFORM register_change(1, 'Утверждена спецификация батона 400 г');
+    INSERT INTO bom_item (parent_product_id, component_id, position_no, quantity, per_quantity, unit_id) VALUES
+        (1, 14, 1, 440, 1, (SELECT id FROM unit WHERE symbol = 'г')),
+        (1, 12, 2, 32,  1, (SELECT id FROM unit WHERE symbol = 'см')),
+        (1, 13, 3, 2,   1, (SELECT id FROM unit WHERE symbol = 'шт'));
+
+    PERFORM register_change(15, 'Утверждён состав набора');
+    INSERT INTO bom_item (parent_product_id, component_id, position_no, quantity, per_quantity, unit_id) VALUES
+        (15, 1, 1, 2, 1, (SELECT id FROM unit WHERE symbol = 'шт')),
+        (15, 4, 2, 1, 1, (SELECT id FROM unit WHERE symbol = 'шт'));
+
+    -- Модификация: батон 800 г, фарш и оболочка свои, клипсы наследуются из базы
+    v_mod := create_modification(1, 'Колбаса докторская Клинская 800 г', 'КЛ-01.001-01');
+    PERFORM register_change(v_mod, 'Батон 800 г: увеличены нормы фарша и оболочки');
+    UPDATE bom_item SET quantity = 880 WHERE parent_product_id = v_mod AND component_id = 14;
+    UPDATE bom_item SET quantity = 55  WHERE parent_product_id = v_mod AND component_id = 12;
+    UPDATE product SET weight_gram = 800, price = 960 WHERE id = v_mod;
+
+    PERFORM set_config('bom.change_id', '', FALSE);
+END;
+$$;
+
+-- Обновим материализованное представление после вставок
+SELECT refresh_aggregates();
+
+-- Примеры вызова:
+-- SELECT * FROM find_bom(15);                -- дерево набора на всю глубину
+-- SELECT * FROM calc_bom(1, 1000);           -- сырьё и упаковка на 1000 батонов
+-- SELECT * FROM calc_bom(1, 1000, 22);       -- только мясное сырьё
+-- SELECT * FROM calc_bom_by_class(15, 100);  -- свод по классам ресурсов на 100 наборов

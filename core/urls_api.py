@@ -65,4 +65,12 @@ urlpatterns = [
     path('aggregates/parameter-aggregates/', api_views.api_parameter_aggregates, name='api_parameter_aggregates'),
     path('aggregates/refresh/', api_views.api_refresh_aggregates, name='api_refresh_aggregates'),
     path('products/filter/', api_views.api_filter_products_by_params_no_class, name='api_filter_products_by_params_no_class'),
+
+######################## спецификация (BOM) ##################################
+    path('bom/<int:product_id>/tree/', api_views.api_bom_tree, name='api_bom_tree'),
+    path('bom/<int:product_id>/calc/', api_views.api_bom_calc, name='api_bom_calc'),
+    path('bom/<int:product_id>/calc-by-class/', api_views.api_bom_calc_by_class, name='api_bom_calc_by_class'),
+    path('bom/<int:product_id>/changes/', api_views.api_bom_changes, name='api_bom_changes'),
+    path('bom/modifications/create/', api_views.api_create_modification, name='api_create_modification'),
+    path('bom/changes/register/', api_views.api_register_change, name='api_register_change'),
 ]

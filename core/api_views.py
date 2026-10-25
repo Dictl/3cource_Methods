@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 from django.shortcuts import get_object_or_404
 from django.http import JsonResponse
 from django.views.decorators.http import require_http_methods
@@ -51,6 +52,12 @@ from .service import (
     find_products_with_params_and_attrs,
     filter_products_by_parameters,
     filter_products_by_parameters_without_class,
+    find_bom,
+    calc_bom,
+    calc_bom_by_class,
+    create_modification,
+    register_change,
+    get_bom_changes,
 )
 
 
@@ -74,6 +81,10 @@ def _serialize_product(product):
         "supplier": product.supplier,
         "weight_gram": product.weight_gram,
         "classifier_node_id": product.classifier_node_id,
+        "designation": product.designation,
+        "product_type": product.product_type_id,
+        "unit_id": product.unit_id,
+        "base_product_id": product.base_product_id,
     }
 
 
@@ -1205,4 +1216,80 @@ def api_parameter_value_types(request):
              {'value': 'enum', 'label': 'Перечисление'}]
     return JsonResponse({"ok": True, "data": types})
 
+# ========== СПЕЦИФИКАЦИЯ (BOM) ==========
 
+def _serialize_db_row(row):
+    return {k: float(v) if isinstance(v, Decimal) else v for k, v in row.items()}
+
+def _serialize_bom_change(change):
+    return {
+        "id": change.id,
+        "product_id": change.product_id,
+        "change_no": change.change_no,
+        "description": change.description,
+        "author": change.author,
+        "created_at": change.created_at.isoformat() if change.created_at else None,
+    }
+
+"Дерево состава изделия на всю глубину (find_bom)"
+@require_http_methods(["GET"])
+def api_bom_tree(request, product_id):
+    try:
+        rows = find_bom(product_id)
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Сводные нормы расхода (calc_bom). ?quantity=1000&class_id=22 - class_id необязателен"
+@require_http_methods(["GET"])
+def api_bom_calc(request, product_id):
+    try:
+        class_id = request.GET.get("class_id") or None
+        rows = calc_bom(product_id, request.GET.get("quantity", 1), class_id)
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Сводные нормы расхода по классам ресурсов (calc_bom_by_class). ?quantity=1000"
+@require_http_methods(["GET"])
+def api_bom_calc_by_class(request, product_id):
+    try:
+        rows = calc_bom_by_class(product_id, request.GET.get("quantity", 1))
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Создать модификацию изделия. {base_product_id, name, designation}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_modification(request):
+    try:
+        payload = _parse_json(request)
+        product = create_modification(
+            base_product_id=payload.get("base_product_id"),
+            name=payload.get("name"),
+            designation=payload.get("designation"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_product(product)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Зарегистрировать изменение спецификации изделия. {product_id, description}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_register_change(request):
+    try:
+        payload = _parse_json(request)
+        change = register_change(payload.get("product_id"), payload.get("description"))
+        return JsonResponse({"ok": True, "data": _serialize_bom_change(change)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"История изменений спецификации изделия"
+@require_http_methods(["GET"])
+def api_bom_changes(request, product_id):
+    try:
+        changes = get_bom_changes(product_id)
+        return JsonResponse({"ok": True, "data": [_serialize_bom_change(c) for c in changes]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))

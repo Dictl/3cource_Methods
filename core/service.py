@@ -8,7 +8,9 @@ from core.models import (
     Unit,
     ProductParameterValue,
     ParameterDefinition,
+    BomChange,
 )
+from django.db import connection, DatabaseError
 from django.db.models import Q
 from typing import Optional
 
@@ -962,3 +964,97 @@ def filter_products_by_parameters_without_class(filters):
             break
 
     return list(Product.objects.filter(id__in=product_ids))
+
+#############################################СПЕЦИФИКАЦИЯ (BOM)#############################################
+"Вызов функции БД. Ошибки из RAISE EXCEPTION превращаются в ValueError с текстом из БД"
+def _call_db_function(sql, params):
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            columns = [col[0] for col in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    except DatabaseError as e:
+        diag = getattr(e.__cause__, "diag", None)
+        raise ValueError(diag.message_primary if diag else str(e))
+
+"Проверка, что изделие существует"
+def _check_product_exists(product_id):
+    try:
+        product_id = int(product_id)
+    except (TypeError, ValueError):
+        raise ValueError("Некорректный id изделия")
+    if not Product.objects.filter(id=product_id).exists():
+        raise ValueError("Нет такого изделия")
+    return product_id
+
+"Проверка количества изделий для расчёта норм"
+def _check_quantity(quantity):
+    try:
+        quantity = float(quantity)
+    except (TypeError, ValueError):
+        raise ValueError("Количество должно быть числом")
+    if quantity <= 0:
+        raise ValueError("Количество должно быть больше нуля")
+    return quantity
+
+"Дерево состава изделия на всю глубину (find_bom)"
+def find_bom(product_id):
+    product_id = _check_product_exists(product_id)
+    return _call_db_function("SELECT * FROM find_bom(%s)", [product_id])
+
+"Сводные нормы расхода на quantity изделий. class_id - только компоненты этого класса и его подклассов"
+def calc_bom(product_id, quantity=1, class_id=None):
+    product_id = _check_product_exists(product_id)
+    quantity = _check_quantity(quantity)
+
+    if class_id is not None:
+        try:
+            class_id = int(class_id)
+        except (TypeError, ValueError):
+            raise ValueError("Некорректный id класса")
+        if not ClassifierNode.objects.filter(id=class_id).exists():
+            raise ValueError("Нет такого classifier_node")
+
+    return _call_db_function("SELECT * FROM calc_bom(%s, %s, %s)", [product_id, quantity, class_id])
+
+"Сводные нормы расхода, сгруппированные по классам ресурсов"
+def calc_bom_by_class(product_id, quantity=1):
+    product_id = _check_product_exists(product_id)
+    quantity = _check_quantity(quantity)
+    return _call_db_function("SELECT * FROM calc_bom_by_class(%s, %s)", [product_id, quantity])
+
+"Создание модификации на основе базового изделия. Базовая спецификация копируется с флагом базы"
+def create_modification(base_product_id, name, designation=None):
+    base_product_id = _check_product_exists(base_product_id)
+
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Название модификации обязательно")
+    if Product.objects.filter(name=name).exists():
+        raise ValueError(f"Товар с именем '{name}' уже существует")
+
+    designation = (designation or "").strip() or None
+    if designation and Product.objects.filter(designation=designation).exists():
+        raise ValueError(f"Изделие с обозначением '{designation}' уже существует")
+
+    rows = _call_db_function(
+        "SELECT create_modification(%s, %s, %s) AS id",
+        [base_product_id, name, designation]
+    )
+    return Product.objects.get(id=rows[0]["id"])
+
+"Регистрация изменения спецификации изделия"
+def register_change(product_id, description):
+    product_id = _check_product_exists(product_id)
+
+    description = (description or "").strip()
+    if not description:
+        raise ValueError("Описание изменения обязательно")
+
+    rows = _call_db_function("SELECT register_change(%s, %s) AS id", [product_id, description])
+    return BomChange.objects.get(id=rows[0]["id"])
+
+"История изменений спецификации изделия"
+def get_bom_changes(product_id):
+    product_id = _check_product_exists(product_id)
+    return list(BomChange.objects.filter(product_id=product_id).order_by("change_no"))

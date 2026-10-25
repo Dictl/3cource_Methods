@@ -13,6 +13,7 @@ class ClassifierNode(models.Model):
     name = models.TextField(unique=True)
     unit = models.TextField(blank=True, null=True)
     sort_order = models.IntegerField()
+    base_unit = models.ForeignKey('Unit', models.DO_NOTHING, blank=True, null=True)
 
     class Meta:
         managed = False
@@ -71,10 +72,75 @@ class Product(models.Model):
     price = models.IntegerField()
     supplier = models.TextField()
     weight_gram = models.IntegerField()
+    designation = models.CharField(unique=True, max_length=64, blank=True, null=True)
+    product_type = models.ForeignKey('ProductType', models.DO_NOTHING, db_column='product_type_code', to_field='code', default='part')
+    unit = models.ForeignKey('Unit', models.DO_NOTHING, blank=True, null=True)
+    base_product = models.ForeignKey('self', models.DO_NOTHING, blank=True, null=True, related_name='modifications')
+    last_change = models.ForeignKey('BomChange', models.DO_NOTHING, blank=True, null=True, related_name='+')
 
     class Meta:
         managed = False
         db_table = 'product'
+
+
+class ProductType(models.Model):
+    code = models.CharField(primary_key=True, max_length=16)
+    name = models.TextField(unique=True)
+    production_role = models.CharField(max_length=16)
+    can_have_bom = models.BooleanField()
+
+    class Meta:
+        managed = False
+        db_table = 'product_type'
+
+
+class BomChange(models.Model):
+    product = models.ForeignKey(Product, models.DO_NOTHING, related_name='changes')
+    change_no = models.IntegerField()
+    description = models.TextField()
+    author = models.TextField()
+    created_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'bom_change'
+        unique_together = (('product', 'change_no'),)
+
+
+class BomItem(models.Model):
+    parent_product = models.ForeignKey(Product, models.DO_NOTHING, related_name='bom_items')
+    component = models.ForeignKey(Product, models.DO_NOTHING, related_name='used_in')
+    position_no = models.IntegerField(default=0)
+    quantity = models.DecimalField(max_digits=18, decimal_places=6)
+    per_quantity = models.DecimalField(max_digits=18, decimal_places=6, default=1)
+    unit = models.ForeignKey('Unit', models.DO_NOTHING)
+    is_base = models.BooleanField(default=False)
+
+    class Meta:
+        managed = False
+        db_table = 'bom_item'
+        unique_together = (('parent_product', 'component'),)
+
+
+class BomChangeLog(models.Model):
+    change = models.ForeignKey(BomChange, models.DO_NOTHING, blank=True, null=True)
+    parent_product_id = models.IntegerField()
+    component_id = models.IntegerField()
+    operation = models.CharField(max_length=8)
+    old_quantity = models.DecimalField(max_digits=18, decimal_places=6, blank=True, null=True)
+    new_quantity = models.DecimalField(max_digits=18, decimal_places=6, blank=True, null=True)
+    old_per_quantity = models.DecimalField(max_digits=18, decimal_places=6, blank=True, null=True)
+    new_per_quantity = models.DecimalField(max_digits=18, decimal_places=6, blank=True, null=True)
+    old_unit_id = models.IntegerField(blank=True, null=True)
+    new_unit_id = models.IntegerField(blank=True, null=True)
+    old_is_base = models.BooleanField(blank=True, null=True)
+    new_is_base = models.BooleanField(blank=True, null=True)
+    changed_by = models.TextField()
+    changed_at = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = 'bom_change_log'
 
 
 class ProductAttributeValue(models.Model):
