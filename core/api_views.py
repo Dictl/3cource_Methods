@@ -392,18 +392,7 @@ def api_categories(request):
 @require_http_methods(["GET"])
 def api_products(request):
     all_products = base_product_output()
-    data = [
-        {
-            "id": product.id,
-            "name": product.name,
-            "sku": product.sku,
-            "price": product.price,
-            "supplier": product.supplier,
-            "weight_gram": product.weight_gram,
-            "classifier_node_id": product.classifier_node_id,
-        }
-        for product in all_products
-    ]
+    data = [_serialize_product(product) for product in all_products]
     return JsonResponse({"ok": True, "data": data})
 
 "Получение подробной информации по отдельному товару (product) по id"

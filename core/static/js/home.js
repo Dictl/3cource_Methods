@@ -1,136 +1,64 @@
-var apiUrls = window.apiUrls || {};
-var nodesData = [];
-var selectedCategoryId = null;
+// Вкладка «Каталог»: дерево категорий, товары, карточка товара
 
-var modal = document.getElementById('modal');
-var moveModal = document.getElementById('moveModal');
-var overlay = document.getElementById('overlay');
-var messageBox = document.getElementById('messageBox');
+var nodesData = [];           // все вершины дерева (с полем level)
+var selectedCategoryId = null;
 
 var treeContainer = document.getElementById('treeContainer');
 var contentContainer = document.getElementById('contentContainer');
+var productCard = document.getElementById('productCard');
 
-var openBtn = document.getElementById('openModalBtn');
-var openMoveBtn = document.getElementById('openMoveModalBtn');
-var cancelBtn = document.getElementById('cancelBtn');
-var cancelMoveBtn = document.getElementById('cancelMoveBtn');
+var overlay = document.getElementById('overlay');
+var modal = document.getElementById('modal');
+var moveModal = document.getElementById('moveModal');
 
 var addForm = document.getElementById('addForm');
 var moveForm = document.getElementById('moveForm');
-var searchForm = document.getElementById('searchForm');
-
-var typeCategory = document.getElementById('type_category');
-var typeProduct = document.getElementById('type_product');
-var productFields = document.getElementById('product_fields');
-var unitField = document.getElementById('unit_field');
 
 var parentSelect = document.getElementById('parent_id');
 var moveNodeSelect = document.getElementById('move_node_id');
 var newParentSelect = document.getElementById('new_parent_id');
 var targetPositionSelect = document.getElementById('target_position');
 
-var moveTypeParent = document.getElementById('move_type_parent');
-var moveTypeSibling = document.getElementById('move_type_sibling');
-var targetParentDiv = document.getElementById('target_parent_div');
-var targetPositionDiv = document.getElementById('target_position_div');
+// ---------- Дерево ----------
 
-var searchPanel = document.getElementById('searchPanel');
-var searchCategoryIdInput = document.getElementById('search_category_id');
-var searchCategoryTitle = document.getElementById('searchCategoryTitle');
-var closeSearchBtn = document.getElementById('closeSearchPanel');
-
-function escapeHtml(value) {
-    return String(value || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
-function showMessage(text, type) {
-    if (!messageBox) return;
-    var color = type === 'error' ? 'red' : 'green';
-    messageBox.innerHTML = '<p style="color:' + color + ';">' + escapeHtml(text) + '</p>';
-}
-
-function clearMessage() {
-    if (messageBox) messageBox.innerHTML = '';
-}
-
-function getCookie(name) {
-    var cookieValue = null;
-    if (document.cookie && document.cookie !== '') {
-        var cookies = document.cookie.split(';');
-        for (var i = 0; i < cookies.length; i++) {
-            var cookie = cookies[i].trim();
-            if (cookie.substring(0, name.length + 1) === (name + '=')) {
-                cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
-                break;
-            }
-        }
-    }
-    return cookieValue;
-}
-
-function apiRequest(url, options) {
-    var opts = options || {};
-    var headers = opts.headers || {};
-    if (opts.method && opts.method !== 'GET') {
-        headers['X-CSRFToken'] = getCookie('csrftoken');
-    }
-    opts.headers = headers;
-
-    return fetch(url, opts)
-        .then(function (res) {
-            return res.json().then(function (data) {
-                return { status: res.status, data: data };
-            });
+function loadTree() {
+    return apiRequest('/api/tree/')
+        .then(function (data) {
+            nodesData = data || [];
+            renderTree();
+            fillNodeSelects();
         })
-        .then(function (result) {
-            if (result.status >= 200 && result.status < 300 && result.data.ok) {
-                return result.data.data;
-            }
-            throw new Error(result.data.error || 'Ошибка API');
+        .catch(function (err) {
+            treeContainer.innerHTML = '<p class="muted">Ошибка загрузки дерева: ' + escapeHtml(err.message) + '</p>';
         });
 }
 
-function openModalFunc() {
-    if (modal) modal.style.display = 'block';
-    if (overlay) overlay.style.display = 'block';
-}
-
-function openMoveModalFunc() {
-    if (moveModal) moveModal.style.display = 'block';
-    if (overlay) overlay.style.display = 'block';
-    updateParentOptions();
-    updateTargetPositionOptions();
-}
-
-function closeModalFunc() {
-    if (modal) modal.style.display = 'none';
-    if (moveModal) moveModal.style.display = 'none';
-    if (overlay) overlay.style.display = 'none';
-}
-
-function toggleFields() {
-    if (typeProduct && typeProduct.checked) {
-        if (productFields) productFields.style.display = 'block';
-        if (unitField) unitField.style.display = 'none';
-    } else {
-        if (productFields) productFields.style.display = 'none';
-        if (unitField) unitField.style.display = 'block';
+function renderTree() {
+    if (!nodesData.length) {
+        treeContainer.innerHTML = '<p class="muted">Дерево пустое</p>';
+        return;
     }
+
+    var html = '<ul class="tree">';
+    nodesData.forEach(function (n) {
+        var cls = n.id === selectedCategoryId ? ' class="selected"' : '';
+        html += '<li' + cls + ' style="padding-left:' + (n.level * 20) + 'px">'
+            + (hasChildren(n.id) ? '&#9662; ' : '&middot; ')
+            + '<a href="#" class="node-link" data-id="' + n.id + '">' + escapeHtml(n.name) + '</a>'
+            + '<span class="node-buttons">'
+            + '<button type="button" class="small danger delete-category-btn" data-id="' + n.id + '" title="Удалить">&#10005;</button>'
+            + '</span>'
+            + '</li>';
+    });
+    html += '</ul>';
+    treeContainer.innerHTML = html;
 }
 
-function toggleMoveType() {
-    if (moveTypeParent && moveTypeParent.checked) {
-        if (targetParentDiv) targetParentDiv.style.display = 'block';
-        if (targetPositionDiv) targetPositionDiv.style.display = 'none';
-    } else {
-        if (targetParentDiv) targetParentDiv.style.display = 'none';
-        if (targetPositionDiv) targetPositionDiv.style.display = 'block';
+function hasChildren(nodeId) {
+    for (var i = 0; i < nodesData.length; i++) {
+        if (nodesData[i].parent_id === nodeId) return true;
     }
+    return false;
 }
 
 function getNodeById(nodeId) {
@@ -141,464 +69,364 @@ function getNodeById(nodeId) {
 }
 
 function getDescendantsIds(rootId) {
-    var descendants = [];
+    var result = [];
     var stack = [rootId];
-    var visited = {};
-
     while (stack.length) {
         var current = stack.pop();
-        if (visited[current]) continue;
-        visited[current] = true;
-
-        for (var i = 0; i < nodesData.length; i++) {
-            if (nodesData[i].parent_id === current) {
-                descendants.push(nodesData[i].id);
-                stack.push(nodesData[i].id);
+        nodesData.forEach(function (n) {
+            if (n.parent_id === current) {
+                result.push(n.id);
+                stack.push(n.id);
             }
-        }
+        });
     }
-
-    return descendants;
+    return result;
 }
 
-function updateSelectOptions() {
-    if (!parentSelect || !moveNodeSelect || !newParentSelect) return;
+// ---------- Содержимое категории ----------
 
-    var options = '<option value="">— Корневая категория —</option>';
-    var moveOptions = '<option value="">— Выберите вершину —</option>';
+function loadCategory(categoryId) {
+    selectedCategoryId = categoryId;
+    productCard.innerHTML = '';
+    clearMessage();
+    renderTree();
 
-    for (var i = 0; i < nodesData.length; i++) {
-        var n = nodesData[i];
-        options += '<option value="' + n.id + '">' + escapeHtml(n.name) + ' (id=' + n.id + ')</option>';
-        moveOptions += '<option value="' + n.id + '">' + escapeHtml(n.name) + ' (id=' + n.id + ')</option>';
-    }
-
-    parentSelect.innerHTML = options;
-    newParentSelect.innerHTML = options;
-    moveNodeSelect.innerHTML = moveOptions;
+    return apiRequest('/api/categories/' + categoryId + '/products/')
+        .then(renderCategory)
+        .catch(function (err) {
+            showMessage(err.message, 'error');
+        });
 }
 
-function updateParentOptions() {
-    if (!moveNodeSelect || !newParentSelect) return;
-
-    var selectedId = parseInt(moveNodeSelect.value, 10);
-    if (!selectedId || isNaN(selectedId)) return;
-
-    var descendantsIds = getDescendantsIds(selectedId);
-
-    for (var i = 0; i < newParentSelect.options.length; i++) {
-        var option = newParentSelect.options[i];
-        var rawValue = option.value;
-        if (rawValue === '') {
-            option.disabled = false;
-            option.classList.remove('error-option');
-            continue;
-        }
-
-        var nodeId = parseInt(rawValue, 10);
-        var disabled = nodeId === selectedId || descendantsIds.indexOf(nodeId) !== -1;
-        option.disabled = disabled;
-        if (disabled) {
-            option.classList.add('error-option');
-        } else {
-            option.classList.remove('error-option');
-        }
-    }
-}
-
-function updateTargetPositionOptions() {
-    if (!moveNodeSelect || !targetPositionSelect) return;
-
-    var selectedId = parseInt(moveNodeSelect.value, 10);
-    if (!selectedId || isNaN(selectedId)) {
-        targetPositionSelect.innerHTML = '<option value="">— Сначала выберите вершину —</option>';
-        return;
-    }
-
-    var selectedNode = getNodeById(selectedId);
-    if (!selectedNode) return;
-
-    var options = '<option value="">— В начало —</option>';
-    var siblingCount = 0;
-
-    for (var i = 0; i < nodesData.length; i++) {
-        var n = nodesData[i];
-        if (n.id !== selectedId && n.parent_id === selectedNode.parent_id) {
-            options += '<option value="' + n.id + '">После ' + escapeHtml(n.name) + ' (id=' + n.id + ')</option>';
-            siblingCount += 1;
-        }
-    }
-
-    if (siblingCount === 0) {
-        options = '<option value="">— Нет других вершин на этом уровне —</option>';
-    }
-
-    targetPositionSelect.innerHTML = options;
-}
-
-function renderTree() {
-    treeContainer.innerHTML = '';
-    if (!treeContainer) return;
-
-    if (!nodesData.length) {
-        treeContainer.innerHTML = '<p>Нет данных</p>';
-        return;
-    }
-
-    var html = '<ul style="list-style-type:none; padding-left:0;">';
-    for (var i = 0; i < nodesData.length; i++) {
-        var n = nodesData[i];
-        html += '<li style="margin-left:' + (n.level * 2.5) + 'rem;">'
-            + '<a href="#" class="node-link" data-node-id="' + n.id + '" style="text-decoration:none;">'
-            + 'id: ' + n.id + ', p_id: ' + (n.parent_id === null ? 'None' : n.parent_id) + ' - ' + escapeHtml(n.name)
-            + '</a>'
-            + '<span style="white-space:nowrap; margin-left:6px;">'
-            + '<button type="button" class="delete-category-btn" data-id="' + n.id + '" data-name="' + escapeHtml(n.name) + '">✖</button>'
-            + '<button type="button" class="search-btn" data-node-id="' + n.id + '" data-node-name="' + escapeHtml(n.name) + '">🔍</button>'
-            + '</span>'
-            + '</li>';
-    }
-    html += '</ul>';
-    treeContainer.innerHTML = html;
-}
-
-function renderProductsTable(products) {
-    if (!products || !products.length) {
-        return '<p>В этой категории нет товаров</p>';
-    }
-
-    var html = ''
-        + '<table border="1" cellpadding="5" cellspacing="0" width="100%">'
-        + '<thead><tr>'
-        + '<th>Название товара</th><th>SKU</th><th>Цена (руб)</th><th>Поставщик</th><th>Вес (грамм)</th><th>Действие</th>'
-        + '</tr></thead><tbody>';
-
-    for (var i = 0; i < products.length; i++) {
-        var p = products[i];
-        html += '<tr>'
-            + '<td>' + escapeHtml(p.name) + '</td>'
-            + '<td>' + escapeHtml(p.sku || '—') + '</td>'
-            + '<td>' + escapeHtml(p.price) + '</td>'
-            + '<td>' + escapeHtml(p.supplier) + '</td>'
-            + '<td>' + escapeHtml(p.weight_gram) + '</td>'
-            + '<td><button type="button" class="delete-product-btn" data-id="' + p.id + '" data-name="' + escapeHtml(p.name) + '">✖</button></td>'
-            + '</tr>';
-    }
-
-    html += '</tbody></table>';
-    return html;
-}
-
-function renderCategoryContent(payload) {
-    var category = payload.category;
-    var products = payload.products;
-
-    contentContainer.innerHTML = '<h2>' + escapeHtml(category.name) + ' (id=' + category.id + ')</h2>' + renderProductsTable(products);
-}
-
-function renderSearchResult(data, searchType, categoryId) {
+function renderCategory(data) {
     var category = data.category;
 
-    var html = '<h2>Поиск для категории "' + escapeHtml(category.name) + '" (id=' + category.id + ')</h2>';
+    var html = '<h2>' + escapeHtml(category.name) + '</h2>'
+        + '<div class="form-row">'
+        + '<span class="muted">Найти:</span>'
+        + '<button type="button" class="search-btn" data-type="children">Все подкатегории</button>'
+        + '<button type="button" class="search-btn" data-type="parents">Все родители</button>'
+        + '<button type="button" class="search-btn" data-type="terminals">Конечные категории</button>'
+        + '</div>'
+        + '<div id="searchResult"></div>'
+        + '<h3>Товары (' + data.products.length + ')</h3>'
+        + '<p class="hint">Показаны товары этой категории и всех её подкатегорий. Нажмите на строку, чтобы открыть карточку.</p>';
 
-    if (searchType === 'descendants') {
-        html += '<h3>Все потомки:</h3>';
-        var items = data.children || [];
-        if (items.length) {
-            html += '<ul>';
-            items.forEach(function(d) {
-                html += '<li><a href="#" class="node-link" data-node-id="' + d.id + '">' + escapeHtml(d.name) + '</a> (id=' + d.id + ')</li>';
-            });
-            html += '</ul>';
-        } else {
-            html += '<p>Нет потомков</p>';
-        }
-    } else if (searchType === 'parents') {
-        html += '<h3>Все родители:</h3>';
-        var items = data.parents || [];
-        if (items.length) {
-            html += '<ul>';
-            items.forEach(function(p) {
-                html += '<li><a href="#" class="node-link" data-node-id="' + p.id + '">' + escapeHtml(p.name) + '</a> (id=' + p.id + ')</li>';
-            });
-            html += '</ul>';
-        } else {
-            html += '<p>Нет родителей (корневая категория)</p>';
-        }
-    } else if (searchType === 'terminals') {
-        html += '<h3>Терминальные узлы:</h3>';
-        var items = data.terminal_nodes || [];
-        if (items.length) {
-            html += '<ul>';
-            items.forEach(function(t) {
-                html += '<li><a href="#" class="node-link" data-node-id="' + t.id + '">' + escapeHtml(t.name) + '</a> (id=' + t.id + ')</li>';
-            });
-            html += '</ul>';
-        } else {
-            html += '<p>Нет терминальных узлов</p>';
-        }
+    if (!data.products.length) {
+        html += '<p class="muted">В этой категории нет товаров</p>';
+    } else {
+        html += '<div class="table-wrap"><table><thead><tr>'
+            + '<th>Название</th><th>Обозначение</th><th>Тип</th><th>Цена, руб</th><th>Поставщик</th><th>Вес, г</th><th></th>'
+            + '</tr></thead><tbody>';
+        data.products.forEach(function (p) {
+            html += '<tr class="clickable product-row" data-id="' + p.id + '">'
+                + '<td>' + escapeHtml(p.name) + '</td>'
+                + '<td>' + escapeHtml(p.designation || '—') + '</td>'
+                + '<td>' + productTypeName(p.product_type) + '</td>'
+                + '<td class="num">' + formatNumber(p.price) + '</td>'
+                + '<td>' + escapeHtml(p.supplier) + '</td>'
+                + '<td class="num">' + formatNumber(p.weight_gram) + '</td>'
+                + '<td><button type="button" class="small danger delete-product-btn" data-id="' + p.id
+                + '" data-name="' + escapeHtml(p.name) + '" title="Удалить">&#10005;</button></td>'
+                + '</tr>';
+        });
+        html += '</tbody></table></div>';
     }
 
-    html += '<p><button type="button" id="clearSearchBtn">Очистить результаты поиска</button></p>';
     contentContainer.innerHTML = html;
 }
 
+// Поиск родителей / потомков / конечных категорий
+function runSearch(type) {
+    var titles = {
+        children: 'Все подкатегории',
+        parents: 'Все родители (от ближнего к корню)',
+        terminals: 'Конечные категории (без подкатегорий)'
+    };
+    var listKey = { children: 'children', parents: 'parents', terminals: 'terminal_nodes' };
 
-function loadTree() {
-    return apiRequest(apiUrls.tree)
+    apiRequest('/api/categories/' + selectedCategoryId + '/' + type + '/')
         .then(function (data) {
-            nodesData = data || [];
-            renderTree();
-            updateSelectOptions();
-            updateParentOptions();
-            updateTargetPositionOptions();
-        })
-        .catch(function (err) {
-            treeContainer.innerHTML = '<p style="color:red;">Ошибка загрузки дерева: ' + escapeHtml(err.message) + '</p>';
-        });
-}
-
-function loadCategoryProducts(categoryId) {
-    selectedCategoryId = categoryId;
-    clearMessage();
-
-    apiRequest('/api/categories/' + categoryId + '/products/')
-        .then(function (data) {
-            renderCategoryContent(data);
+            var items = data[listKey[type]] || [];
+            var html = '<div class="info"><b>' + titles[type] + ':</b> ';
+            if (!items.length) {
+                html += '<span class="muted">ничего не найдено</span>';
+            } else {
+                html += items.map(function (n) {
+                    return '<a href="#" class="node-link" data-id="' + n.id + '">' + escapeHtml(n.name) + '</a>';
+                }).join(', ');
+            }
+            html += '</div>';
+            document.getElementById('searchResult').innerHTML = html;
         })
         .catch(function (err) {
             showMessage(err.message, 'error');
         });
 }
 
-function showSearchPanel(nodeId, nodeName) {
-    if (!searchPanel || !searchCategoryIdInput || !searchCategoryTitle) return;
-    searchCategoryIdInput.value = nodeId;
-    searchCategoryTitle.textContent = 'Поиск для категории "' + nodeName + '" (id=' + nodeId + ')';
-    searchPanel.classList.add('active');
+// ---------- Карточка товара ----------
+
+function loadProductCard(productId) {
+    apiRequest('/api/products/' + productId + '/')
+        .then(function (product) {
+            // параметры и атрибуты берём из выборки по категории товара
+            return apiRequest('/api/products/for-category/' + product.classifier_node_id + '/with-params/')
+                .then(function (items) {
+                    var extra = null;
+                    for (var i = 0; i < items.length; i++) {
+                        if (items[i].product.id === product.id) extra = items[i];
+                    }
+                    renderProductCard(product, extra || { parameters: [], attributes: [] });
+                });
+        })
+        .catch(function (err) {
+            showMessage(err.message, 'error');
+        });
 }
 
-function closeSearchPanel() {
-    if (searchPanel) searchPanel.classList.remove('active');
+function paramValue(p) {
+    if (p.value_str !== null && p.value_str !== undefined) return escapeHtml(p.value_str);
+    if (p.value_int !== null && p.value_int !== undefined) return formatNumber(p.value_int);
+    if (p.value_real !== null && p.value_real !== undefined) return formatNumber(p.value_real);
+    return '—';
 }
 
-function handleAddSubmit(e) {
+function enumValue(v) {
+    if (v.value_str) return escapeHtml(v.value_str);
+    if (v.value_int !== null) return formatNumber(v.value_int);
+    return formatNumber(v.value_real);
+}
+
+function renderProductCard(product, extra) {
+    var canHaveBom = ['part', 'assembly', 'kit', 'complex'].indexOf(product.product_type) !== -1;
+
+    var html = '<h2>' + escapeHtml(product.name) + '</h2>'
+        + '<dl class="props">'
+        + '<dt>id</dt><dd>' + product.id + '</dd>'
+        + '<dt>Обозначение</dt><dd>' + escapeHtml(product.designation || '—') + '</dd>'
+        + '<dt>Тип</dt><dd>' + productTypeName(product.product_type) + '</dd>'
+        + '<dt>SKU</dt><dd>' + escapeHtml(product.sku || '—') + '</dd>'
+        + '<dt>Цена</dt><dd>' + formatNumber(product.price) + ' руб</dd>'
+        + '<dt>Поставщик</dt><dd>' + escapeHtml(product.supplier) + '</dd>'
+        + '<dt>Вес</dt><dd>' + formatNumber(product.weight_gram) + ' г</dd>';
+    if (product.base_product_id) {
+        html += '<dt>Модификация от</dt><dd><a href="#" class="open-product" data-id="' + product.base_product_id
+            + '">изделия id=' + product.base_product_id + '</a></dd>';
+    }
+    html += '</dl>';
+
+    if (canHaveBom) {
+        html += '<p><a href="#bom/' + product.id + '">Открыть спецификацию (состав) &rarr;</a></p>';
+    } else {
+        html += '<p class="hint">Это ' + productTypeName(product.product_type).toLowerCase()
+            + ' &mdash; у него нет своего состава, оно само входит в состав других изделий.</p>';
+    }
+
+    html += '<h3>Параметры</h3>';
+    html += renderTable([
+        { title: 'Параметр', render: function (p) { return escapeHtml(p.parameter_definition.name); } },
+        { title: 'Значение', render: paramValue, num: true },
+        { title: 'Ед. изм.', render: function (p) { return escapeHtml(p.parameter_definition.unit.symbol || ''); } }
+    ], extra.parameters, 'Параметры не заполнены');
+
+    html += '<h3>Характеристики</h3>';
+    html += renderTable([
+        { title: 'Перечисление', render: function (a) { return escapeHtml(a.enum_definition.description); } },
+        { title: 'Значение', render: function (a) { return enumValue(a.enum_value); } }
+    ], extra.attributes, 'Характеристики не заданы');
+
+    productCard.innerHTML = html;
+    productCard.scrollIntoView();
+}
+
+// ---------- Окна добавления / перемещения ----------
+
+function openModal(which) {
+    which.hidden = false;
+    overlay.hidden = false;
+}
+
+function closeModals() {
+    modal.hidden = true;
+    moveModal.hidden = true;
+    overlay.hidden = true;
+}
+
+function fillNodeSelects() {
+    var options = '';
+    nodesData.forEach(function (n) {
+        var indent = new Array(n.level + 1).join('   ');
+        options += '<option value="' + n.id + '">' + indent + escapeHtml(n.name) + '</option>';
+    });
+
+    parentSelect.innerHTML = '<option value="">— Корень —</option>' + options;
+    newParentSelect.innerHTML = '<option value="">— Корень —</option>' + options;
+    moveNodeSelect.innerHTML = '<option value="">— Выберите —</option>' + options;
+
+    if (selectedCategoryId) parentSelect.value = selectedCategoryId;
+}
+
+function toggleProductFields() {
+    var isProduct = document.getElementById('type_product').checked;
+    document.getElementById('product_fields').hidden = !isProduct;
+    document.getElementById('unit_field').hidden = isProduct;
+}
+
+function toggleMoveType() {
+    var reorder = document.getElementById('move_type_sibling').checked;
+    document.getElementById('target_parent_div').hidden = reorder;
+    document.getElementById('target_position_div').hidden = !reorder;
+}
+
+// Нельзя переместить вершину в себя или в потомка — такие пункты отключаем
+function updateMoveOptions() {
+    var selectedId = parseInt(moveNodeSelect.value, 10);
+    var blocked = selectedId ? getDescendantsIds(selectedId).concat([selectedId]) : [];
+
+    for (var i = 0; i < newParentSelect.options.length; i++) {
+        var opt = newParentSelect.options[i];
+        var isBlocked = blocked.indexOf(parseInt(opt.value, 10)) !== -1;
+        opt.disabled = isBlocked;
+        opt.classList.toggle('error-option', isBlocked);
+    }
+
+    var node = getNodeById(selectedId);
+    if (!node) {
+        targetPositionSelect.innerHTML = '<option value="">— Сначала выберите вершину —</option>';
+        return;
+    }
+    var html = '<option value="">— В начало —</option>';
+    nodesData.forEach(function (n) {
+        if (n.id !== selectedId && n.parent_id === node.parent_id) {
+            html += '<option value="' + n.id + '">' + escapeHtml(n.name) + '</option>';
+        }
+    });
+    targetPositionSelect.innerHTML = html;
+}
+
+function afterChange(message) {
+    showMessage(message, 'success');
+    closeModals();
+    return loadTree().then(function () {
+        if (selectedCategoryId && getNodeById(selectedCategoryId)) {
+            loadCategory(selectedCategoryId).then(function () { showMessage(message, 'success'); });
+        }
+    });
+}
+
+addForm.addEventListener('submit', function (e) {
     e.preventDefault();
-    clearMessage();
-
-    var nodeType = document.querySelector('input[name="node_type"]:checked').value;
+    var isProduct = document.getElementById('type_product').checked;
     var payload = {
         name: document.getElementById('name').value,
-        parent_id: document.getElementById('parent_id').value || null
+        parent_id: parentSelect.value || null
     };
+    var url = '/api/categories/add/';
 
-    var url = apiUrls.addCategory;
-
-    if (nodeType === 'category') {
-        payload.unit = document.getElementById('unit').value || null;
-    } else {
-        url = apiUrls.addProduct;
+    if (isProduct) {
+        url = '/api/products/add/';
         payload.sku = document.getElementById('sku').value || null;
-        payload.price = document.getElementById('price').value;
+        payload.price = document.getElementById('price').value || 0;
         payload.supplier = document.getElementById('supplier').value;
-        payload.weight_gram = document.getElementById('weight_gram').value;
+        payload.weight_gram = document.getElementById('weight_gram').value || 0;
+    } else {
+        payload.unit = document.getElementById('unit').value || null;
     }
 
-    apiRequest(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    })
+    apiRequest(url, 'POST', payload)
         .then(function () {
-            showMessage('Успешно добавлено', 'success');
             addForm.reset();
-            toggleFields();
-            closeModalFunc();
-            return loadTree();
-        })
-        .then(function () {
-            if (selectedCategoryId) {
-                loadCategoryProducts(selectedCategoryId);
-            }
+            toggleProductFields();
+            return afterChange('Добавлено');
         })
         .catch(function (err) {
             showMessage(err.message, 'error');
         });
-}
+});
 
-function handleMoveSubmit(e) {
+moveForm.addEventListener('submit', function (e) {
     e.preventDefault();
-    clearMessage();
-
     var categoryId = parseInt(moveNodeSelect.value, 10);
-    if (!categoryId || isNaN(categoryId)) {
-        showMessage('Выберите вершину для перемещения', 'error');
-        return;
-    }
+    var url, payload;
 
-    var url;
-    var payload;
-
-    if (moveTypeParent && moveTypeParent.checked) {
-        url = apiUrls.moveCategory;
+    if (document.getElementById('move_type_sibling').checked) {
+        url = '/api/categories/reorder/';
         payload = {
             category_id: categoryId,
-            new_parent_id: newParentSelect.value === '' ? null : parseInt(newParentSelect.value, 10)
+            target_position_id: targetPositionSelect.value ? parseInt(targetPositionSelect.value, 10) : null
         };
     } else {
-        url = apiUrls.reorderCategory;
+        url = '/api/categories/move/';
         payload = {
             category_id: categoryId,
-            target_position_id: targetPositionSelect.value === '' ? null : parseInt(targetPositionSelect.value, 10)
+            new_parent_id: newParentSelect.value ? parseInt(newParentSelect.value, 10) : null
         };
     }
 
-    apiRequest(url, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    })
+    apiRequest(url, 'PUT', payload)
+        .then(function () { return afterChange('Перемещено'); })
+        .catch(function (err) { showMessage(err.message, 'error'); });
+});
+
+function deleteItem(type, id, name) {
+    if (!confirm('Удалить «' + name + '»?')) return;
+    var url = type === 'category' ? '/api/categories/delete/' : '/api/products/delete/';
+
+    apiRequest(url, 'DELETE', { delete_id: id })
         .then(function () {
-            showMessage('Перемещение выполнено', 'success');
-            closeModalFunc();
-            return loadTree();
-        })
-        .then(function () {
-            if (selectedCategoryId) {
-                loadCategoryProducts(selectedCategoryId);
-            }
-        })
-        .catch(function (err) {
-            showMessage(err.message, 'error');
-        });
-}
-
-function handleSearchSubmit(e) {
-    e.preventDefault();
-    clearMessage();
-
-    var selectedRadio = document.querySelector('#searchForm input[name="search_type"]:checked');
-    if (!selectedRadio) {
-        showMessage('Выберите тип поиска', 'error');
-        return;
-    }
-
-    var categoryId = searchCategoryIdInput.value;
-    if (!categoryId) {
-        showMessage('Категория не выбрана', 'error');
-        return;
-    }
-
-    var searchType = selectedRadio.value;
-    var url;
-
-    if (searchType === 'descendants') {
-        url = '/api/categories/' + categoryId + '/children/';
-    } else if (searchType === 'parents') {
-        url = '/api/categories/' + categoryId + '/parents/';
-    } else if (searchType === 'terminals') {
-        url = '/api/categories/' + categoryId + '/terminals/';
-    } else {
-        showMessage('Неизвестный тип поиска', 'error');
-        return;
-    }
-
-    apiRequest(url)
-        .then(function (data) {
-            renderSearchResult(data, searchType, categoryId);
-            closeSearchPanel();
-        })
-        .catch(function (err) {
-            showMessage(err.message, 'error');
-        });
-}
-
-function handleDelete(deleteType, deleteId, itemName) {
-    if (!confirm('Удалить ' + itemName + '?')) return;
-    clearMessage();
-
-    var url = deleteType === 'category' ? apiUrls.deleteCategory : apiUrls.deleteProduct;
-
-    apiRequest(url, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ delete_id: deleteId })
-    })
-        .then(function () {
-            showMessage('Удалено', 'success');
-            if (deleteType === 'category' && deleteId === selectedCategoryId) {
+            if (type === 'category' && id === selectedCategoryId) {
                 selectedCategoryId = null;
-                contentContainer.innerHTML = '<p>Выберите категорию слева</p>';
+                contentContainer.innerHTML = '<p class="muted">Выберите категорию в дереве слева.</p>';
+                productCard.innerHTML = '';
             }
-            return loadTree();
+            return afterChange('Удалено');
         })
-        .then(function () {
-            if (selectedCategoryId) {
-                loadCategoryProducts(selectedCategoryId);
-            }
-        })
-        .catch(function (err) {
-            showMessage(err.message, 'error');
-        });
+        .catch(function (err) { showMessage(err.message, 'error'); });
 }
 
-function handleDocumentClick(e) {
-    var nodeLink = e.target.closest('.node-link');
-    if (nodeLink) {
+// ---------- Обработчики ----------
+
+document.getElementById('tab-catalog').addEventListener('click', function (e) {
+    var t = e.target;
+
+    if (t.closest('.node-link')) {
         e.preventDefault();
-        loadCategoryProducts(parseInt(nodeLink.getAttribute('data-node-id'), 10));
-        return;
+        loadCategory(parseInt(t.closest('.node-link').getAttribute('data-id'), 10));
+    } else if (t.closest('.delete-category-btn')) {
+        var id = parseInt(t.closest('.delete-category-btn').getAttribute('data-id'), 10);
+        deleteItem('category', id, getNodeById(id).name);
+    } else if (t.closest('.delete-product-btn')) {
+        var btn = t.closest('.delete-product-btn');
+        deleteItem('product', parseInt(btn.getAttribute('data-id'), 10), btn.getAttribute('data-name'));
+    } else if (t.closest('.product-row')) {
+        loadProductCard(parseInt(t.closest('.product-row').getAttribute('data-id'), 10));
+    } else if (t.closest('.open-product')) {
+        e.preventDefault();
+        loadProductCard(parseInt(t.closest('.open-product').getAttribute('data-id'), 10));
+    } else if (t.closest('.search-btn')) {
+        runSearch(t.closest('.search-btn').getAttribute('data-type'));
     }
+});
 
-    var searchBtn = e.target.closest('.search-btn');
-    if (searchBtn) {
-        showSearchPanel(searchBtn.getAttribute('data-node-id'), searchBtn.getAttribute('data-node-name'));
-        return;
-    }
+document.getElementById('openModalBtn').onclick = function () { openModal(modal); };
+document.getElementById('openMoveModalBtn').onclick = function () {
+    openModal(moveModal);
+    updateMoveOptions();
+};
 
-    var deleteCategoryBtn = e.target.closest('.delete-category-btn');
-    if (deleteCategoryBtn) {
-        handleDelete('category', parseInt(deleteCategoryBtn.getAttribute('data-id'), 10), 'категорию "' + deleteCategoryBtn.getAttribute('data-name') + '"');
-        return;
-    }
+var cancelButtons = document.querySelectorAll('.cancel-btn');
+for (var i = 0; i < cancelButtons.length; i++) cancelButtons[i].onclick = closeModals;
+overlay.onclick = closeModals;
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeModals();
+});
 
-    var deleteProductBtn = e.target.closest('.delete-product-btn');
-    if (deleteProductBtn) {
-        handleDelete('product', parseInt(deleteProductBtn.getAttribute('data-id'), 10), 'товар "' + deleteProductBtn.getAttribute('data-name') + '"');
-        return;
-    }
+document.getElementById('type_category').onchange = toggleProductFields;
+document.getElementById('type_product').onchange = toggleProductFields;
+document.getElementById('move_type_parent').onchange = toggleMoveType;
+document.getElementById('move_type_sibling').onchange = toggleMoveType;
+moveNodeSelect.onchange = updateMoveOptions;
 
-    if (e.target && e.target.id === 'clearSearchBtn') {
-        contentContainer.innerHTML = '<p>Выберите категорию слева или нажмите 🔍 для поиска</p>';
-    }
-}
-
-if (openBtn) openBtn.onclick = openModalFunc;
-if (openMoveBtn) openMoveBtn.onclick = openMoveModalFunc;
-if (cancelBtn) cancelBtn.onclick = closeModalFunc;
-if (cancelMoveBtn) cancelMoveBtn.onclick = closeModalFunc;
-if (overlay) overlay.onclick = closeModalFunc;
-
-if (typeCategory) typeCategory.onclick = toggleFields;
-if (typeProduct) typeProduct.onclick = toggleFields;
-
-if (moveTypeParent) moveTypeParent.onclick = toggleMoveType;
-if (moveTypeSibling) moveTypeSibling.onclick = toggleMoveType;
-
-if (moveNodeSelect) {
-    moveNodeSelect.onchange = function () {
-        updateParentOptions();
-        updateTargetPositionOptions();
-    };
-}
-
-if (searchForm) searchForm.onsubmit = handleSearchSubmit;
-if (addForm) addForm.onsubmit = handleAddSubmit;
-if (moveForm) moveForm.onsubmit = handleMoveSubmit;
-if (closeSearchBtn) closeSearchBtn.onclick = closeSearchPanel;
-
-document.addEventListener('click', handleDocumentClick);
-
-toggleFields();
+toggleProductFields();
 toggleMoveType();
 loadTree();
