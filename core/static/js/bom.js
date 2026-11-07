@@ -10,9 +10,14 @@
 
 var bomProductSelect = document.getElementById('bomProductSelect');
 var bomClassSelect = document.getElementById('bomClassSelect');
+var bomComponentSelect = document.getElementById('bomComponentSelect');
+var bomItemQuantity = document.getElementById('bomItemQuantity');
+var bomItemPerQuantity = document.getElementById('bomItemPerQuantity');
+var bomItemUnitSelect = document.getElementById('bomItemUnitSelect');
 var bomContent = document.getElementById('bomContent');
 var bomProductId = null;
 var bomProductsLoaded = false;
+var bomUnits = [];
 
 // Типы, у которых может быть состав (материалы и покупные изделия — нет)
 var BOM_TYPES = ['part', 'assembly', 'kit', 'complex'];
@@ -43,6 +48,32 @@ function loadBomClasses() {
     });
 }
 
+function loadBomUnits() {
+    return apiRequest('/api/units/').then(function (units) {
+        bomUnits = units || [];
+        var html = '';
+        bomUnits.forEach(function (u) {
+            html += '<option value="' + u.id + '">' + escapeHtml(u.symbol + ' — ' + u.name) + '</option>';
+        });
+        bomItemUnitSelect.innerHTML = html;
+    });
+}
+
+function loadBomComponents() {
+    if (!bomProductId) {
+        bomComponentSelect.innerHTML = '<option value="">— Выберите изделие —</option>';
+        return Promise.resolve();
+    }
+    return apiRequest('/api/products/').then(function (products) {
+        var html = '<option value="">— Выберите компонент —</option>';
+        products.forEach(function (p) {
+            if (p.id === bomProductId) return;
+            html += '<option value="' + p.id + '">' + escapeHtml(p.designation || p.name) + ' — ' + escapeHtml(p.name) + '</option>';
+        });
+        bomComponentSelect.innerHTML = html;
+    });
+}
+
 tabLoaders.bom = function () {
     // список изделий может измениться на других вкладках, поэтому перечитываем
     loadBomProducts().then(function () {
@@ -51,6 +82,7 @@ tabLoaders.bom = function () {
         showMessage(err.message, 'error');
     });
     loadBomClasses();
+    loadBomUnits();
 };
 
 // Вызывается из common.js при адресе вида #bom/15
@@ -77,6 +109,8 @@ function showBomProduct(productId) {
     document.getElementById('bomTitle').textContent = option ? option.textContent : 'Изделие id=' + productId;
     bomContent.hidden = false;
 
+    loadBomUnits();
+    loadBomComponents();
     loadBomTree();
     loadBomCalc();
     loadBomChanges();
@@ -88,22 +122,59 @@ function loadBomTree() {
     var box = document.getElementById('bomTree');
     box.innerHTML = '<p class="muted">Загрузка...</p>';
 
-    apiRequest('/api/bom/' + bomProductId + '/tree/')
-        .then(function (rows) {
-            box.innerHTML = renderTable([
-                {
-                    title: 'Компонент',
-                    render: function (r) {
-                        return '<span style="padding-left:' + ((r.lvl - 1) * 20) + 'px">'
-                            + (r.lvl > 1 ? '&#8627; ' : '') + escapeHtml(r.name) + '</span>'
-                            + (r.is_base ? ' <span class="badge">из базы</span>' : '');
-                    }
-                },
-                { title: 'Обозначение', render: function (r) { return escapeHtml(r.designation || '—'); } },
-                { title: 'Тип', render: function (r) { return productTypeName(r.product_type_code); } },
-                { title: 'Норма', num: true, render: function (r) { return formatNumber(r.norm) + ' ' + escapeHtml(r.norm_unit); } },
-                { title: 'На 1 изделие', num: true, render: function (r) { return formatNumber(r.total_quantity) + ' ' + escapeHtml(r.total_unit); } }
-            ], rows, 'Состав не задан');
+    Promise.all([
+        apiRequest('/api/bom/' + bomProductId + '/items/'),
+        apiRequest('/api/bom/' + bomProductId + '/tree/')
+    ])
+        .then(function (results) {
+            var rows = results[0] || [];
+            var treeRows = results[1] || [];
+            var unitOptions = bomUnits.map(function (u) {
+                return '<option value="' + u.id + '">' + escapeHtml(u.symbol + ' — ' + u.name) + '</option>';
+            }).join('');
+
+            if (!rows.length) {
+                box.innerHTML = '<p class="muted">Состав не задан</p>';
+                return;
+            }
+
+            var html = '<div class="table-wrap"><table><thead><tr>'
+                + '<th>Компонент</th><th>Обозначение</th><th>Тип</th><th>Норма</th><th>Норма на 1</th><th>Ед. изм.</th><th>Действие</th>'
+                + '</tr></thead><tbody>';
+
+            rows.forEach(function (r) {
+                var unitSelect = '<select name="unit_id">' + unitOptions.replace('value="' + r.unit_id + '"', 'value="' + r.unit_id + '" selected') + '</select>';
+                html += '<tr>'
+                    + '<td>' + escapeHtml(r.component_name || '—') + (r.is_base ? ' <span class="badge">из базы</span>' : '') + '</td>'
+                    + '<td>' + escapeHtml(r.component_designation || '—') + '</td>'
+                    + '<td>' + productTypeName(r.product_type_code) + '</td>'
+                    + '<td><input type="number" name="quantity" min="0.001" step="any" value="' + Number(r.quantity || 0) + '"></td>'
+                    + '<td><input type="number" name="per_quantity" min="0.001" step="any" value="' + Number(r.per_quantity || 1) + '"></td>'
+                    + '<td>' + unitSelect + '</td>'
+                    + '<td><form class="bom-item-form" data-bom-item-id="' + r.id + '"><button type="submit" class="small">Сохранить</button>'
+                    + '<button type="button" class="small danger bom-delete-btn" data-bom-item-id="' + r.id + '">Удалить</button></form></td>'
+                    + '</tr>';
+            });
+            html += '</tbody></table></div>';
+            box.innerHTML = html;
+
+            if (treeRows.length) {
+                var treeHint = '<p class="hint">Дерево состава (для проверки):</p>' + renderTable([
+                    {
+                        title: 'Компонент',
+                        render: function (row) {
+                            return '<span style="padding-left:' + ((row.lvl - 1) * 20) + 'px">'
+                                + (row.lvl > 1 ? '&#8627; ' : '') + escapeHtml(row.name) + '</span>'
+                                + (row.is_base ? ' <span class="badge">из базы</span>' : '');
+                        }
+                    },
+                    { title: 'Обозначение', render: function (row) { return escapeHtml(row.designation || '—'); } },
+                    { title: 'Тип', render: function (row) { return productTypeName(row.product_type_code); } },
+                    { title: 'Норма', num: true, render: function (row) { return formatNumber(row.norm) + ' ' + escapeHtml(row.norm_unit); } },
+                    { title: 'На 1 изделие', num: true, render: function (row) { return formatNumber(row.total_quantity) + ' ' + escapeHtml(row.total_unit); } }
+                ], treeRows, '');
+                box.innerHTML += treeHint;
+            }
         })
         .catch(function (err) {
             box.innerHTML = '<p class="muted">' + escapeHtml(err.message) + '</p>';
@@ -182,6 +253,71 @@ bomProductSelect.addEventListener('change', function () {
     // меняем адрес, чтобы ссылку на изделие можно было скопировать
     history.replaceState(null, '', id ? '#bom/' + id : '#bom');
     showBomProduct(id || null);
+});
+
+document.getElementById('bomAddItemForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (!bomProductId) {
+        showMessage('Сначала выберите изделие', 'error');
+        return;
+    }
+    apiRequest('/api/bom/items/create/', 'POST', {
+        parent_product_id: bomProductId,
+        component_id: bomComponentSelect.value,
+        quantity: bomItemQuantity.value,
+        per_quantity: bomItemPerQuantity.value,
+        unit_id: bomItemUnitSelect.value,
+        position_no: 0
+    })
+        .then(function () {
+            e.target.reset();
+            bomItemQuantity.value = 1;
+            bomItemPerQuantity.value = 1;
+            loadBomTree();
+            loadBomCalc();
+            showMessage('Компонент добавлен в состав', 'success');
+        })
+        .catch(function (err) {
+            showMessage(err.message, 'error');
+        });
+});
+
+document.addEventListener('submit', function (e) {
+    if (!e.target.classList.contains('bom-item-form')) return;
+    e.preventDefault();
+    var form = e.target;
+    var id = parseInt(form.getAttribute('data-bom-item-id'), 10);
+    var payload = {
+        bom_item_id: id,
+        quantity: form.querySelector('input[name="quantity"]').value,
+        per_quantity: form.querySelector('input[name="per_quantity"]').value,
+        unit_id: form.querySelector('select[name="unit_id"]').value
+    };
+    apiRequest('/api/bom/items/update/', 'PUT', payload)
+        .then(function () {
+            showMessage('Норма компонента обновлена', 'success');
+            loadBomTree();
+            loadBomCalc();
+        })
+        .catch(function (err) {
+            showMessage(err.message, 'error');
+        });
+});
+
+document.addEventListener('click', function (e) {
+    var btn = e.target.closest('.bom-delete-btn');
+    if (!btn) return;
+    var bomItemId = parseInt(btn.getAttribute('data-bom-item-id'), 10);
+    if (!confirm('Удалить строку состава?')) return;
+    apiRequest('/api/bom/items/' + bomItemId + '/delete/', 'DELETE')
+        .then(function () {
+            showMessage('Компонент удалён из состава', 'success');
+            loadBomTree();
+            loadBomCalc();
+        })
+        .catch(function (err) {
+            showMessage(err.message, 'error');
+        });
 });
 
 document.getElementById('bomCalcForm').addEventListener('submit', function (e) {

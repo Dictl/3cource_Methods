@@ -18,20 +18,24 @@ urlpatterns = [
     path('products/delete/', api_views.api_delete_product, name='api_delete_product'),
     path('products/', api_views.api_products, name='api_products'),
     path('products/add/', api_views.api_add_product, name='api_add_product'),
+    path('products/update/', api_views.api_update_product, name='api_update_product'),
     path('products/<int:product_id>/', api_views.api_product, name='api_product'),
 
 ###################################### enums ##########################################
     path('enums/', api_views.api_enums_all, name='api_enums_all'),
     path('enums/<int:enum_definition_id>/', api_views.api_enum_definition, name='api_enum_definition'),
     path('enums/create/', api_views.api_create_enum_definition, name='api_create_enum_definition'),
+    path('enums/update/', api_views.api_update_enum_definition, name='api_update_enum_definition'),
     path('enums/for-class-tree/<int:classifier_node_id>/', api_views.api_enums_for_class_tree, name='api_enums_for_class_tree'),
     path('enum-values/add/', api_views.api_add_enum_value, name='api_add_enum_value'),
     path('enum-values/delete/', api_views.api_delete_enum_value, name='api_delete_enum_value'),
+    path('enum-values/update/', api_views.api_update_enum_value, name='api_update_enum_value'),
     path('enum-values/reorder/', api_views.api_reorder_enum_value, name='api_reorder_enum_value'),
     path('enum-definitions/delete/', api_views.api_delete_enum_definition, name='api_delete_enum_definition'),
     path('product-attributes/', api_views.api_product_attribute_values, name='api_product_attribute_values'),
     path('product-attributes/assign/', api_views.api_assign_enum_value_to_product, name='api_assign_enum_value_to_product'),
     path("product/<int:product_id>/enums/", api_views.api_product_enums, name="api_product_enums"),
+    path("product-attributes/update/", api_views.api_update_product_attribute, name="api_update_product_attribute"),
     path("product-attributes/delete", api_views.api_delete_product_attribute, name="api_delete_product_attribute"),
 
 ######################## параметры (parameters) ##################################
@@ -67,6 +71,10 @@ urlpatterns = [
     path('products/filter/', api_views.api_filter_products_by_params_no_class, name='api_filter_products_by_params_no_class'),
 
 ######################## спецификация (BOM) ##################################
+    path('bom/<int:product_id>/items/', api_views.api_bom_items, name='api_bom_items'),
+    path('bom/items/create/', api_views.api_create_bom_item, name='api_create_bom_item'),
+    path('bom/items/update/', api_views.api_update_bom_item, name='api_update_bom_item'),
+    path('bom/items/<int:bom_item_id>/delete/', api_views.api_delete_bom_item, name='api_delete_bom_item'),
     path('bom/<int:product_id>/tree/', api_views.api_bom_tree, name='api_bom_tree'),
     path('bom/<int:product_id>/calc/', api_views.api_bom_calc, name='api_bom_calc'),
     path('bom/<int:product_id>/calc-by-class/', api_views.api_bom_calc_by_class, name='api_bom_calc_by_class'),

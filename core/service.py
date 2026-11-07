@@ -1,3 +1,4 @@
+from decimal import Decimal
 from core.models import (
     ClassifierNode,
     Product,
@@ -9,6 +10,7 @@ from core.models import (
     ProductParameterValue,
     ParameterDefinition,
     BomChange,
+    BomItem,
 )
 from django.db import connection, DatabaseError
 from django.db.models import Q
@@ -132,7 +134,7 @@ def search_parent_nodes(all_base, node_id):
     return result_parents
 
 "Добавление еще одной категории в classifier_node. Нельзя добавить с таким же имененм, к терминальному узлу"
-def add_category(name, parent_id, unit):
+def add_category(name, parent_id, unit, base_unit_id=None):
     if ClassifierNode.objects.filter(name=name).exists():
         raise ValueError(f"Категория с именем '{name}' уже существует")
 
@@ -147,6 +149,7 @@ def add_category(name, parent_id, unit):
         name=name,
         parent_id=parent_id,
         unit=unit,
+        base_unit_id=base_unit_id,
         sort_order=next_sort_order
     )
     new_category.save()
@@ -433,6 +436,26 @@ def delete_enum_value(enum_value_id):
 
     ev.delete()
 
+
+def update_enum_value(enum_value_id, value_str=None, value_int=None, value_real=None):
+    ev = EnumValue.objects.filter(id=int(enum_value_id)).first()
+    if ev is None:
+        raise ValueError("Нет такого enum_value")
+    if value_str is not None:
+        value_str = value_str.strip()
+        if not value_str:
+            raise ValueError("Значение не может быть пустым")
+        if EnumValue.objects.filter(
+            enum_definition_id=ev.enum_definition_id,
+            value_str__iexact=value_str
+        ).exclude(id=ev.id).exists():
+            raise ValueError("Такое значение уже существует")
+        ev.value_str = value_str
+    ev.value_int = value_int
+    ev.value_real = value_real
+    ev.save()
+    return ev
+
 "удаление enum_definition, только если у него нет enum_value"
 def delete_enum_definition(enum_definition_id):
     enum_definition_id = int(enum_definition_id)
@@ -510,9 +533,18 @@ def get_product_enums(product_id):
         enum_def = enum_val.enum_definition if enum_val else None
         if enum_val and enum_def:
             result.append({
+                'id': pav.id,
                 'enum_definition': {
                     'id': enum_def.id,
                     'description': enum_def.description,
+                    'values': [{
+                        'id': value.id,
+                        'value_str': value.value_str,
+                        'value_int': value.value_int,
+                        'value_real': value.value_real,
+                    } for value in EnumValue.objects.filter(
+                        enum_definition_id=enum_def.id
+                    ).order_by('sort_order', 'id')],
                 },
                 'enum_value': {
                     'id': enum_val.id,
@@ -532,6 +564,18 @@ def delete_product_attribute(product_id):
         raise ValueError("Нет такого product_attribute")
     elem.delete()
 
+def update_product_attribute(attribute_id, enum_value_id):
+    attribute_id = int(attribute_id)
+    enum_value_id = int(enum_value_id)
+    attribute = ProductAttributeValue.objects.filter(id=attribute_id).first()
+    if attribute is None:
+        raise ValueError("Нет такого product_attribute")
+    if not EnumValue.objects.filter(id=enum_value_id).exists():
+        raise ValueError("Нет такого enum_value")
+    attribute.enum_value_id = enum_value_id
+    attribute.save(update_fields=["enum_value"])
+    return attribute
+
 #############################################СПРАВОЧНИК#############################################
 
 "получение всех parameter_definition"
@@ -543,18 +587,19 @@ def get_class_parameters_with_inheritance(classifier_node_id):
     all_nodes = base_output()
     parents = search_parent_nodes(all_nodes, classifier_node_id)
     parents = list(reversed(parents))
-    node_ids = [p.id for p in parents] + [int(classifier_node_id)]
+    descendants = search_child_nodes(all_nodes, classifier_node_id)
+    node_ids = [p.id for p in parents] + [int(classifier_node_id)] + [n.id for n in descendants]
 
     params = (
         ParameterDefinition.objects
         .filter(classifier_node_id__in=node_ids)
         .select_related("unit")
-        .order_by("classifier_node_id", "sort_order")
+        .order_by("sort_order", "classifier_node_id", "id")
     )
 
     merged = {}
     for p in params:
-        merged[p.name] = p
+        merged.setdefault(p.name, p)
 
     return list(merged.values())
 
@@ -640,8 +685,8 @@ def create_parameter_definition(classifier_node_id, name, unit_id, value_type, s
 
     if not name:
         raise ValueError("Имя не может быть пустым")
-    if value_type not in ("str", "int", "real"):
-        raise ValueError("value_type должен быть: str, int или real")
+    if value_type not in ("str", "int", "real", "enum"):
+        raise ValueError("value_type должен быть: str, int, real или enum")
 
     if not ClassifierNode.objects.filter(id=classifier_node_id).exists():
         raise ValueError("Нет такого classifier_node")
@@ -763,8 +808,8 @@ def update_parameter_definition(parameter_definition_id, name=None, unit_id=None
 
     if value_type is not None:
         value_type = value_type.strip()
-        if value_type not in ("str", "int", "real"):
-            raise ValueError("value_type должен быть: str, int или real")
+        if value_type not in ("str", "int", "real", "enum"):
+            raise ValueError("value_type должен быть: str, int, real или enum")
         pd.value_type = value_type
 
     if sort_order is not None:
@@ -775,7 +820,8 @@ def update_parameter_definition(parameter_definition_id, name=None, unit_id=None
 
 "Обновление product_parameter_value(редактирование)"
 def update_product_parameter_value(product_parameter_value_id,
-                                   value_str=None, value_int=None, value_real=None):
+                                   value_str=None, value_int=None, value_real=None,
+                                   value_enum_id=None):
     product_parameter_value_id = int(product_parameter_value_id)
 
     ppv = ProductParameterValue.objects.filter(id=product_parameter_value_id).first()
@@ -786,7 +832,7 @@ def update_product_parameter_value(product_parameter_value_id,
     if pd is None:
         raise ValueError("Нет такого parameter_definition")
 
-    if value_str is None and value_int is None and value_real is None:
+    if value_str is None and value_int is None and value_real is None and value_enum_id is None:
         raise ValueError("Нужно передать хотя бы одно значение")
 
     if pd.value_type == "str":
@@ -795,6 +841,7 @@ def update_product_parameter_value(product_parameter_value_id,
         ppv.value_str = value_str
         ppv.value_int = None
         ppv.value_real = None
+        ppv.value_enum_id = None
 
     elif pd.value_type == "int":
         if value_int is None:
@@ -802,6 +849,7 @@ def update_product_parameter_value(product_parameter_value_id,
         ppv.value_int = value_int
         ppv.value_str = None
         ppv.value_real = None
+        ppv.value_enum_id = None
 
     elif pd.value_type == "real":
         if value_real is None:
@@ -809,6 +857,17 @@ def update_product_parameter_value(product_parameter_value_id,
         ppv.value_real = value_real
         ppv.value_str = None
         ppv.value_int = None
+        ppv.value_enum_id = None
+
+    elif pd.value_type == "enum":
+        if value_enum_id is None:
+            raise ValueError("Для value_type='enum' нужно value_enum_id")
+        if not EnumValue.objects.filter(id=value_enum_id).exists():
+            raise ValueError("Нет такого enum_value")
+        ppv.value_enum_id = value_enum_id
+        ppv.value_str = None
+        ppv.value_int = None
+        ppv.value_real = None
 
     ppv.save()
     return ppv
@@ -853,20 +912,38 @@ def find_products_with_params_and_attrs(classifier_node_id):
         product_params = []
         for item in params_by_product.get(p.id, []):
             pd = item.parameter_definition
-            product_params.append({
-                "parameter_definition": {
-                    "id": pd.id,
-                    "name": pd.name,
-                    "value_type": pd.value_type,
-                    "unit": {
-                        "id": pd.unit_id,
-                        "name": pd.unit.name if pd.unit else None,
-                        "symbol": pd.unit.symbol if pd.unit else None,
+            parameter_data = {
+                "id": pd.id,
+                "name": pd.name,
+                "value_type": pd.value_type,
+                "unit": {
+                    "id": pd.unit_id,
+                    "name": pd.unit.name if pd.unit else None,
+                    "symbol": pd.unit.symbol if pd.unit else None,
+                }
+            }
+            if pd.value_type == "enum":
+                enum_definition = EnumDefinition.objects.filter(
+                    classifier_node_id=pd.classifier_node_id
+                ).first()
+                parameter_data["enum_values"] = [
+                    {
+                        "id": value.id,
+                        "value_str": value.value_str,
+                        "value_int": value.value_int,
+                        "value_real": value.value_real,
                     }
-                },
+                    for value in EnumValue.objects.filter(
+                        enum_definition=enum_definition
+                    ).order_by("sort_order", "id")
+                ] if enum_definition else []
+            product_params.append({
+                "id": item.id,
+                "parameter_definition": parameter_data,
                 "value_str": item.value_str,
                 "value_int": item.value_int,
                 "value_real": item.value_real,
+                "value_enum_id": item.value_enum_id,
             })
 
         product_attrs = []
@@ -875,6 +952,7 @@ def find_products_with_params_and_attrs(classifier_node_id):
             ed = ev.enum_definition if ev else None
             if ev and ed:
                 product_attrs.append({
+                    "id": item.id,
                     "enum_definition": {
                         "id": ed.id,
                         "description": ed.description,
@@ -912,13 +990,19 @@ def filter_products_by_parameters(classifier_node_id, filters):
     for f in filters:
         pd_id = int(f.get("parameter_definition_id"))
         q = Q(parameter_definition_id=pd_id)
+        operator = f.get("operator")
 
         if "value_str" in f:
-            q &= Q(value_str=f["value_str"])
+            lookup = {"exact": "value_str", "contains": "value_str__icontains"}.get(operator, "value_str")
+            q &= Q(**{lookup: f["value_str"]})
         elif "value_int" in f:
-            q &= Q(value_int=f["value_int"])
+            lookup = {"gte": "value_int__gte", "lte": "value_int__lte"}.get(operator, "value_int")
+            q &= Q(**{lookup: f["value_int"]})
         elif "value_real" in f:
-            q &= Q(value_real=f["value_real"])
+            lookup = {"gte": "value_real__gte", "lte": "value_real__lte"}.get(operator, "value_real")
+            q &= Q(**{lookup: f["value_real"]})
+        elif "value_enum_id" in f:
+            q &= Q(value_enum_id=f["value_enum_id"])
         else:
             raise ValueError("В фильтре нет значения")
 
@@ -943,13 +1027,19 @@ def filter_products_by_parameters_without_class(filters):
     for f in filters:
         pd_id = int(f.get("parameter_definition_id"))
         q = Q(parameter_definition_id=pd_id)
+        operator = f.get("operator")
 
         if "value_str" in f:
-            q &= Q(value_str=f["value_str"])
+            lookup = {"exact": "value_str", "contains": "value_str__icontains"}.get(operator, "value_str")
+            q &= Q(**{lookup: f["value_str"]})
         elif "value_int" in f:
-            q &= Q(value_int=f["value_int"])
+            lookup = {"gte": "value_int__gte", "lte": "value_int__lte"}.get(operator, "value_int")
+            q &= Q(**{lookup: f["value_int"]})
         elif "value_real" in f:
-            q &= Q(value_real=f["value_real"])
+            lookup = {"gte": "value_real__gte", "lte": "value_real__lte"}.get(operator, "value_real")
+            q &= Q(**{lookup: f["value_real"]})
+        elif "value_enum_id" in f:
+            q &= Q(value_enum_id=f["value_enum_id"])
         else:
             raise ValueError("В фильтре нет значения")
 
@@ -996,6 +1086,95 @@ def _check_quantity(quantity):
     if quantity <= 0:
         raise ValueError("Количество должно быть больше нуля")
     return quantity
+
+"Список строк состава изделия для редактирования и отображения"
+def list_bom_items(product_id):
+    product_id = _check_product_exists(product_id)
+    return list(
+        BomItem.objects.filter(parent_product_id=product_id)
+        .select_related("component", "unit")
+        .order_by("position_no", "id")
+    )
+
+"Создать строку состава изделия"
+def create_bom_item(parent_product_id, component_id, quantity, per_quantity, unit_id, position_no=0, is_base=False):
+    parent_product_id = _check_product_exists(parent_product_id)
+    component_id = _check_product_exists(component_id)
+
+    if parent_product_id == component_id:
+        raise ValueError("Изделие не может входить само в себя")
+
+    if not Unit.objects.filter(id=int(unit_id)).exists():
+        raise ValueError("Нет такой единицы измерения")
+
+    try:
+        quantity = Decimal(str(quantity))
+        per_quantity = Decimal(str(per_quantity))
+    except Exception as exc:
+        raise ValueError("Количество и норма должны быть числами") from exc
+
+    if quantity <= 0 or per_quantity <= 0:
+        raise ValueError("Количество и норма должны быть больше нуля")
+
+    if BomItem.objects.filter(parent_product_id=parent_product_id, component_id=component_id).exists():
+        raise ValueError("Компонент уже добавлен в состав изделия")
+
+    item = BomItem(
+        parent_product_id=parent_product_id,
+        component_id=component_id,
+        quantity=quantity,
+        per_quantity=per_quantity,
+        unit_id=int(unit_id),
+        position_no=int(position_no),
+        is_base=is_base,
+    )
+    item.save()
+    return item
+
+"Редактировать строку состава изделия"
+def update_bom_item(bom_item_id, quantity=None, per_quantity=None, unit_id=None, position_no=None, is_base=None):
+    try:
+        bom_item = BomItem.objects.get(id=int(bom_item_id))
+    except BomItem.DoesNotExist as exc:
+        raise ValueError("Строка состава не найдена") from exc
+
+    if quantity is not None:
+        try:
+            bom_item.quantity = Decimal(str(quantity))
+        except Exception as exc:
+            raise ValueError("Количество должно быть числом") from exc
+        if bom_item.quantity <= 0:
+            raise ValueError("Количество должно быть больше нуля")
+
+    if per_quantity is not None:
+        try:
+            bom_item.per_quantity = Decimal(str(per_quantity))
+        except Exception as exc:
+            raise ValueError("Норма должна быть числом") from exc
+        if bom_item.per_quantity <= 0:
+            raise ValueError("Норма должна быть больше нуля")
+
+    if unit_id is not None:
+        if not Unit.objects.filter(id=int(unit_id)).exists():
+            raise ValueError("Нет такой единицы измерения")
+        bom_item.unit_id = int(unit_id)
+
+    if position_no is not None:
+        bom_item.position_no = int(position_no)
+
+    if is_base is not None:
+        bom_item.is_base = bool(is_base)
+
+    bom_item.save()
+    return bom_item
+
+"Удалить строку состава изделия"
+def delete_bom_item(bom_item_id):
+    try:
+        bom_item = BomItem.objects.get(id=int(bom_item_id))
+    except BomItem.DoesNotExist as exc:
+        raise ValueError("Строка состава не найдена") from exc
+    bom_item.delete()
 
 "Дерево состава изделия на всю глубину (find_bom)"
 def find_bom(product_id):

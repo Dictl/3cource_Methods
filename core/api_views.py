@@ -30,6 +30,7 @@ from .service import (
     reorder_enum_value,
     create_enum_definition,
     add_enum_value,
+    update_enum_value,
     delete_enum_value,
     delete_enum_definition,
     enum_definitions_for_class_tree,
@@ -37,6 +38,7 @@ from .service import (
     product_attribute_values_output,
     get_product_enums,
     delete_product_attribute,
+    update_product_attribute,
     get_all_parameter_definition,
     get_class_parameters_with_inheritance,
     create_unit_dimension,
@@ -52,6 +54,10 @@ from .service import (
     find_products_with_params_and_attrs,
     filter_products_by_parameters,
     filter_products_by_parameters_without_class,
+    list_bom_items,
+    create_bom_item,
+    update_bom_item,
+    delete_bom_item,
     find_bom,
     calc_bom,
     calc_bom_by_class,
@@ -127,14 +133,40 @@ def _serialize_unit(u):
     }
 
 def _serialize_parameter_definition(pd):
-    return {
+    result = {
         "id": pd.id,
         "classifier_node_id": pd.classifier_node_id,
         "name": pd.name,
         "unit_id": pd.unit_id,
+        "unit_symbol": pd.unit.symbol if pd.unit else None,
         "value_type": pd.value_type,
         "sort_order": pd.sort_order,
     }
+    if pd.value_type in ("int", "real"):
+        constraint = ParameterNumericConstraint.objects.filter(
+            parameter_definition_id=pd.id
+        ).first()
+        result["min_value"] = float(constraint.min_value) if constraint else 0
+        result["max_value"] = float(constraint.max_value) if constraint else None
+    if pd.value_type == "enum":
+        enum_definition = EnumDefinition.objects.filter(
+            classifier_node_id=pd.classifier_node_id
+        ).first()
+        result["enum_values"] = [
+            _serialize_enum_value(value)
+            for value in EnumValue.objects.filter(
+                enum_definition=enum_definition
+            ).order_by("sort_order", "id")
+        ] if enum_definition else []
+    elif pd.value_type == "str":
+        result["allowed_values"] = [
+            value for value in ProductParameterValue.objects.filter(
+                parameter_definition_id=pd.id,
+                value_str__isnull=False,
+            ).values_list("value_str", flat=True).distinct().order_by("value_str")
+            if value
+        ]
+    return result
 
 def _serialize_product_parameter_value(ppv):
     return {
@@ -159,6 +191,7 @@ def api_tree(request):
             "level": getattr(n, "level", 0),
             "unit": n.unit,
             "sort_order": n.sort_order,
+            "base_unit_id": n.base_unit_id,
         }
         for n in nodes
     ]
@@ -234,8 +267,10 @@ def api_add_category(request):
         parent_id = payload.get("parent_id")
         parent_id = None if parent_id in ("", None) else int(parent_id)
         unit = payload.get("unit")
+        base_unit_id = payload.get("base_unit_id")
+        base_unit_id = None if base_unit_id in ("", None) else int(base_unit_id)
 
-        category = add_category(name, parent_id, unit)
+        category = add_category(name, parent_id, unit, base_unit_id)
         return JsonResponse(
             {
                 "ok": True,
@@ -244,6 +279,7 @@ def api_add_category(request):
                     "name": category.name,
                     "parent_id": category.parent_id,
                     "unit": category.unit,
+                    "base_unit_id": category.base_unit_id,
                 },
             }
         )
@@ -271,6 +307,29 @@ def api_add_product(request):
             supplier=(payload.get("supplier") or "").strip(),
             weight_gram=int(payload.get("weight_gram")),
         )
+        return JsonResponse({"ok": True, "data": _serialize_product(product)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_product(request):
+    try:
+        payload = _parse_json(request)
+        product = get_object_or_404(Product, id=int(payload.get("product_id")))
+        for field in ("name", "sku", "supplier", "designation"):
+            if field in payload:
+                value = payload[field]
+                setattr(product, field, (value or "").strip() or None if field != "name" else (value or "").strip())
+        for field in ("price", "weight_gram"):
+            if field in payload:
+                setattr(product, field, int(payload[field]))
+        if "product_type" in payload:
+            product.product_type_id = payload["product_type"]
+        if "unit_id" in payload:
+            product.unit_id = payload["unit_id"] or None
+        product.save()
         return JsonResponse({"ok": True, "data": _serialize_product(product)})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
@@ -465,7 +524,17 @@ def api_enums_for_class_tree(request, classifier_node_id):
         enum_defs = enum_definitions_for_class_tree(classifier_node_id)
         return JsonResponse({
             "ok": True,
-            "data": [_serialize_enum_definition(ed) for ed in enum_defs]
+            "data": [{
+                "id": ed.id,
+                "classifier_node_id": ed.classifier_node_id,
+                "description": ed.description,
+                "values": [
+                    _serialize_enum_value(value)
+                    for value in EnumValue.objects.filter(
+                        enum_definition_id=ed.id
+                    ).order_by("sort_order", "id")
+                ],
+            } for ed in enum_defs]
         })
     except ValueError as e:
         return _json_error(str(e))
@@ -484,6 +553,29 @@ def api_create_enum_definition(request):
 
         ed = create_enum_definition(int(classifier_node_id), description)
         return JsonResponse({"ok": True, "data": _serialize_enum_definition(ed)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_enum_definition(request):
+    try:
+        payload = _parse_json(request)
+        enum_definition_id = payload.get("enum_definition_id")
+        description = (payload.get("description") or "").strip()
+        if enum_definition_id in (None, "") or not description:
+            return _json_error("enum_definition_id и description обязательны")
+        enum_definition = EnumDefinition.objects.get(id=int(enum_definition_id))
+        duplicate = EnumDefinition.objects.filter(
+            description__iexact=description
+        ).exclude(id=enum_definition.id).exists()
+        if duplicate:
+            return _json_error("Такое перечисление уже существует")
+        enum_definition.description = description
+        enum_definition.save(update_fields=["description"])
+        return JsonResponse({"ok": True, "data": _serialize_enum_definition(enum_definition)})
+    except EnumDefinition.DoesNotExist:
+        return _json_error("Перечисление не найдено", 404)
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
@@ -533,6 +625,24 @@ def api_delete_enum_value(request):
 
         delete_enum_value(int(enum_value_id))
         return JsonResponse({"ok": True, "data": {"deleted": int(enum_value_id)}})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_enum_value(request):
+    try:
+        payload = _parse_json(request)
+        value_int = payload.get("value_int")
+        value_real = payload.get("value_real")
+        ev = update_enum_value(
+            payload.get("enum_value_id"),
+            payload.get("value_str"),
+            None if value_int in ("", None) else int(value_int),
+            None if value_real in ("", None) else float(value_real),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_enum_value(ev)})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
@@ -629,6 +739,20 @@ def api_product_enums(request, product_id):
         },
         "enums": enums_unique
     })
+
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_product_attribute(request):
+    try:
+        payload = _parse_json(request)
+        attribute_id = payload.get("product_attribute_value_id")
+        enum_value_id = payload.get("enum_value_id")
+        if attribute_id in (None, "") or enum_value_id in (None, ""):
+            return _json_error("product_attribute_value_id и enum_value_id обязательны")
+        attribute = update_product_attribute(attribute_id, enum_value_id)
+        return JsonResponse({"ok": True, "data": _serialize_product_attribute_value(attribute)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
 
 "Удалить атрибут товара (product_attribute_value) по id"
 @csrf_exempt
@@ -797,6 +921,7 @@ def api_update_product_parameter_value(request):
 
         value_int = payload.get("value_int")
         value_real = payload.get("value_real")
+        value_enum_id = payload.get("value_enum_id")
         if value_int in ("", None):
             value_int = None
         else:
@@ -805,12 +930,17 @@ def api_update_product_parameter_value(request):
             value_real = None
         else:
             value_real = float(value_real)
+        if value_enum_id in ("", None):
+            value_enum_id = None
+        else:
+            value_enum_id = int(value_enum_id)
 
         ppv = update_product_parameter_value(
             product_parameter_value_id=payload.get("product_parameter_value_id"),
             value_str=payload.get("value_str"),
             value_int=value_int,
             value_real=value_real,
+            value_enum_id=value_enum_id,
         )
         return JsonResponse({"ok": True, "data": _serialize_product_parameter_value(ppv)})
     except (TypeError, ValueError) as e:
@@ -846,24 +976,23 @@ def api_filter_products_by_params(request, category_id):
         payload = _parse_json(request)
         filters = payload.get("filters", [])
 
-        # Преобразуем фильтры с min/max в пару условий
+        # Преобразуем диапазон в два условий по одному параметру.
         expanded_filters = []
         for f in filters:
             if "min" in f or "max" in f:
-                # Создаём отдельные условия для нижней и верхней границы
                 if "min" in f:
+                    value_key = "value_int" if "value_int" in f else "value_real"
                     expanded_filters.append({
                         "parameter_definition_id": f["parameter_definition_id"],
                         "operator": "gte",
-                        "value_int": f.get("value_int") if "value_int" in f else f["min"],
-                        "value_real": f.get("value_real")
+                        value_key: f["min"]
                     })
                 if "max" in f:
+                    value_key = "value_int" if "value_int" in f else "value_real"
                     expanded_filters.append({
                         "parameter_definition_id": f["parameter_definition_id"],
                         "operator": "lte",
-                        "value_int": f.get("value_int") if "value_int" in f else f["max"],
-                        "value_real": f.get("value_real")
+                        value_key: f["max"]
                     })
             else:
                 # Обычный фильтр с operator
@@ -1219,6 +1348,85 @@ def _serialize_bom_change(change):
         "author": change.author,
         "created_at": change.created_at.isoformat() if change.created_at else None,
     }
+
+
+def _serialize_bom_item(item):
+    return {
+        "id": item.id,
+        "parent_product_id": item.parent_product_id,
+        "component_id": item.component_id,
+        "component_name": item.component.name if item.component else None,
+        "component_designation": item.component.designation if item.component else None,
+        "product_type_code": item.component.product_type_id if item.component else None,
+        "position_no": item.position_no,
+        "quantity": float(item.quantity) if item.quantity is not None else None,
+        "per_quantity": float(item.per_quantity) if item.per_quantity is not None else None,
+        "unit_id": item.unit_id,
+        "unit_symbol": item.unit.symbol if item.unit else None,
+        "is_base": item.is_base,
+    }
+
+"Список строк состава изделия для редактора"
+@require_http_methods(["GET"])
+def api_bom_items(request, product_id):
+    try:
+        rows = list_bom_items(product_id)
+        return JsonResponse({"ok": True, "data": [_serialize_bom_item(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Добавить строку состава изделия"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_bom_item(request):
+    try:
+        payload = _parse_json(request)
+        row = create_bom_item(
+            parent_product_id=payload.get("parent_product_id"),
+            component_id=payload.get("component_id"),
+            quantity=payload.get("quantity"),
+            per_quantity=payload.get("per_quantity", 1),
+            unit_id=payload.get("unit_id"),
+            position_no=payload.get("position_no", 0),
+            is_base=payload.get("is_base", False),
+        )
+        register_change(row.parent_product_id, f"Добавлен компонент '{row.component.name}' в состав изделия")
+        return JsonResponse({"ok": True, "data": _serialize_bom_item(row)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Редактировать строку состава изделия"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_bom_item(request):
+    try:
+        payload = _parse_json(request)
+        row = update_bom_item(
+            bom_item_id=payload.get("bom_item_id"),
+            quantity=payload.get("quantity"),
+            per_quantity=payload.get("per_quantity"),
+            unit_id=payload.get("unit_id"),
+            position_no=payload.get("position_no"),
+            is_base=payload.get("is_base"),
+        )
+        register_change(row.parent_product_id, f"Обновлена норма компонента '{row.component.name}'")
+        return JsonResponse({"ok": True, "data": _serialize_bom_item(row)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить строку состава изделия"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_bom_item(request, bom_item_id):
+    try:
+        from core.models import BomItem
+        item = BomItem.objects.select_related('component').get(id=int(bom_item_id))
+        parent_id = item.parent_product_id
+        delete_bom_item(bom_item_id)
+        register_change(parent_id, f"Удалён компонент '{item.component.name}' из состава изделия")
+        return JsonResponse({"ok": True})
+    except (BomItem.DoesNotExist, TypeError, ValueError) as e:
+        return _json_error(str(e))
 
 "Дерево состава изделия на всю глубину (find_bom)"
 @require_http_methods(["GET"])

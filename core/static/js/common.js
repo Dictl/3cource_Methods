@@ -35,7 +35,7 @@ function formatNumber(value) {
 }
 
 function showMessage(text, type) {
-    var cls = type === 'error' ? 'error' : 'success';
+    var cls = type === 'error' ? 'error' : (type === 'delete' ? 'delete' : 'success');
     messageBox.innerHTML = '<p class="' + cls + '">' + escapeHtml(text) + '</p>';
     window.scrollTo(0, 0);
 }
@@ -66,8 +66,19 @@ function apiRequest(url, method, body) {
         opts.body = JSON.stringify(body);
     }
 
-    return fetch(url, opts)
+    var request = fetch(url, opts);
+    var timeout = new Promise(function (_, reject) {
+        window.setTimeout(function () {
+            reject(new Error('Превышено время ожидания ответа сервера'));
+        }, 15000);
+    });
+
+    return Promise.race([request, timeout])
         .then(function (res) {
+            if (res.status === 401 || res.redirected && res.url.indexOf('/login/') !== -1) {
+                window.location.href = '/login/?next=' + encodeURIComponent(window.location.pathname);
+                throw new Error('Требуется авторизация');
+            }
             return res.json().catch(function () {
                 throw new Error('Сервер вернул ошибку ' + res.status);
             });
@@ -79,12 +90,12 @@ function apiRequest(url, method, body) {
 }
 
 // Простая таблица: columns = [{title: 'Название', render: function(row) {...}, num: true}]
-function renderTable(columns, rows, emptyText) {
+function renderTable(columns, rows, emptyText, tableClass) {
     if (!rows || !rows.length) {
         return '<p class="muted">' + (emptyText || 'Нет данных') + '</p>';
     }
 
-    var html = '<div class="table-wrap"><table><thead><tr>';
+    var html = '<div class="table-wrap"><table' + (tableClass ? ' class="' + tableClass + '"' : '') + '><thead><tr>';
     columns.forEach(function (col) {
         html += '<th>' + col.title + '</th>';
     });
@@ -93,7 +104,11 @@ function renderTable(columns, rows, emptyText) {
     rows.forEach(function (row) {
         html += '<tr>';
         columns.forEach(function (col) {
-            html += '<td' + (col.num ? ' class="num"' : '') + '>' + col.render(row) + '</td>';
+            var classes = [];
+            if (col.num) classes.push('num');
+            if (col.className) classes.push(col.className);
+            html += '<td' + (classes.length ? ' class="' + classes.join(' ') + '"' : '') + '>'
+                + col.render(row) + '</td>';
         });
         html += '</tr>';
     });

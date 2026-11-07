@@ -488,6 +488,23 @@ INSERT INTO parameter_numeric_constraint (parameter_definition_id, min_value, ma
 SELECT id, 30, 150 FROM parameter_definition WHERE name = 'Диаметр батона' AND classifier_node_id = 2
 ON CONFLICT (parameter_definition_id) DO NOTHING;
 
+-- Остальные физические параметры не допускают отрицательных значений.
+INSERT INTO parameter_numeric_constraint (parameter_definition_id, min_value, max_value)
+SELECT pd.id, limits.min_value, limits.max_value
+FROM (VALUES
+    ('Температура варки', 0, 100),
+    ('Время варки', 0, 1440),
+    ('Содержание соли', 0, 100),
+    ('Длительность копчения', 0, 72),
+    ('Выдержка после копчения', 0, 365),
+    ('Выдержка посола', 0, 365),
+    ('Выход продукта', 0, 100)
+) limits(name, min_value, max_value)
+JOIN parameter_definition pd ON pd.name = limits.name
+ON CONFLICT (parameter_definition_id) DO UPDATE
+SET min_value = EXCLUDED.min_value,
+    max_value = EXCLUDED.max_value;
+
 -- =====================================================
 -- 9. Несколько примеров значений параметров для проверки наследования и агрегатов
 -- =====================================================
@@ -1131,7 +1148,481 @@ BEGIN
 END;
 $$;
 
+-- =====================================================
+-- 17. Дополнительные реалистичные данные по колбасным изделиям
+-- =====================================================
+
+-- Эти параметры определены на корневой категории 1 и поэтому
+-- наследуются только товарами из ветки «Колбасное изделие».
+INSERT INTO parameter_definition (classifier_node_id, name, unit_id, value_type, sort_order)
+SELECT 1, v.name, u.id, v.value_type, v.sort_order
+FROM (VALUES
+    ('Массовая доля белка', 'real', 5),
+    ('Массовая доля жира', 'real', 6),
+    ('Срок годности', 'int', 7),
+    ('Температура хранения', 'real', 8)
+) v(name, value_type, sort_order)
+JOIN unit u ON u.symbol = CASE
+    WHEN v.name IN ('Массовая доля белка', 'Массовая доля жира') THEN '%'
+    WHEN v.name = 'Срок годности' THEN 'сут'
+    ELSE '°C'
+END
+ON CONFLICT (classifier_node_id, name) DO UPDATE
+SET unit_id = EXCLUDED.unit_id,
+    value_type = EXCLUDED.value_type,
+    sort_order = EXCLUDED.sort_order;
+
+INSERT INTO parameter_numeric_constraint (parameter_definition_id, min_value, max_value)
+SELECT pd.id, v.min_value, v.max_value
+FROM (VALUES
+    ('Массовая доля белка', 5, 25),
+    ('Массовая доля жира', 5, 50),
+    ('Срок годности', 1, 60),
+    ('Температура хранения', -5, 8)
+) v(name, min_value, max_value)
+JOIN parameter_definition pd
+  ON pd.classifier_node_id = 1 AND pd.name = v.name
+ON CONFLICT (parameter_definition_id) DO UPDATE
+SET min_value = EXCLUDED.min_value,
+    max_value = EXCLUDED.max_value;
+
+-- Температура и время варки, диаметр батона и содержание соли
+-- заданы для всех товаров этой ветки, включая модификацию 800 г.
+INSERT INTO product_parameter_value (
+    product_id, parameter_definition_id, value_int, value_real
+)
+SELECT p.id, pd.id, v.value_int, v.value_real
+FROM (VALUES
+    (1, 'Температура варки', NULL::INTEGER, 72.0::NUMERIC),
+    (1, 'Время варки', 90, NULL::NUMERIC),
+    (1, 'Диаметр батона', NULL::INTEGER, 65.0::NUMERIC),
+    (1, 'Содержание соли', NULL::INTEGER, 2.5::NUMERIC),
+    (2, 'Температура варки', NULL::INTEGER, 72.0::NUMERIC),
+    (2, 'Время варки', 90, NULL::NUMERIC),
+    (2, 'Диаметр батона', NULL::INTEGER, 85.0::NUMERIC),
+    (2, 'Содержание соли', NULL::INTEGER, 2.3::NUMERIC),
+    (3, 'Температура варки', NULL::INTEGER, 72.0::NUMERIC),
+    (3, 'Время варки', 80, NULL::NUMERIC),
+    (3, 'Диаметр батона', NULL::INTEGER, 65.0::NUMERIC),
+    (3, 'Содержание соли', NULL::INTEGER, 2.5::NUMERIC),
+    (4, 'Температура варки', NULL::INTEGER, 75.0::NUMERIC),
+    (4, 'Время варки', 60, NULL::NUMERIC),
+    (4, 'Диаметр батона', NULL::INTEGER, 60.0::NUMERIC),
+    (4, 'Содержание соли', NULL::INTEGER, 2.2::NUMERIC),
+    (5, 'Температура варки', NULL::INTEGER, 75.0::NUMERIC),
+    (5, 'Время варки', 60, NULL::NUMERIC),
+    (5, 'Диаметр батона', NULL::INTEGER, 60.0::NUMERIC),
+    (5, 'Содержание соли', NULL::INTEGER, 2.4::NUMERIC),
+    (6, 'Температура варки', NULL::INTEGER, 75.0::NUMERIC),
+    (6, 'Время варки', 65, NULL::NUMERIC),
+    (6, 'Диаметр батона', NULL::INTEGER, 60.0::NUMERIC),
+    (6, 'Содержание соли', NULL::INTEGER, 2.4::NUMERIC),
+    (16, 'Температура варки', NULL::INTEGER, 72.0::NUMERIC),
+    (16, 'Время варки', 105, NULL::NUMERIC),
+    (16, 'Диаметр батона', NULL::INTEGER, 65.0::NUMERIC),
+    (16, 'Содержание соли', NULL::INTEGER, 2.5::NUMERIC)
+) v(product_id, name, value_int, value_real)
+JOIN product p ON p.id = v.product_id
+JOIN parameter_definition pd
+  ON pd.classifier_node_id = 2 AND pd.name = v.name
+ON CONFLICT (product_id, parameter_definition_id) DO UPDATE
+SET value_int = EXCLUDED.value_int,
+    value_real = EXCLUDED.value_real,
+    value_str = NULL,
+    value_enum_id = NULL;
+
+-- Общие для ветки характеристики состава, срока хранения и хранения.
+INSERT INTO product_parameter_value (
+    product_id, parameter_definition_id, value_int, value_real
+)
+SELECT p.id, pd.id, v.value_int, v.value_real
+FROM (VALUES
+    (1, 'Массовая доля белка', NULL::INTEGER, 12.5::NUMERIC),
+    (1, 'Массовая доля жира', NULL::INTEGER, 22.0::NUMERIC),
+    (1, 'Срок годности', 20, NULL::NUMERIC),
+    (1, 'Температура хранения', NULL::INTEGER, 2.0::NUMERIC),
+    (2, 'Массовая доля белка', NULL::INTEGER, 12.0::NUMERIC),
+    (2, 'Массовая доля жира', NULL::INTEGER, 22.0::NUMERIC),
+    (2, 'Срок годности', 30, NULL::NUMERIC),
+    (2, 'Температура хранения', NULL::INTEGER, 2.0::NUMERIC),
+    (3, 'Массовая доля белка', NULL::INTEGER, 11.0::NUMERIC),
+    (3, 'Массовая доля жира', NULL::INTEGER, 28.0::NUMERIC),
+    (3, 'Срок годности', 20, NULL::NUMERIC),
+    (3, 'Температура хранения', NULL::INTEGER, 2.0::NUMERIC),
+    (4, 'Массовая доля белка', NULL::INTEGER, 8.0::NUMERIC),
+    (4, 'Массовая доля жира', NULL::INTEGER, 22.0::NUMERIC),
+    (4, 'Срок годности', 7, NULL::NUMERIC),
+    (4, 'Температура хранения', NULL::INTEGER, 2.0::NUMERIC),
+    (5, 'Массовая доля белка', NULL::INTEGER, 8.5::NUMERIC),
+    (5, 'Массовая доля жира', NULL::INTEGER, 25.0::NUMERIC),
+    (5, 'Срок годности', 10, NULL::NUMERIC),
+    (5, 'Температура хранения', NULL::INTEGER, 2.0::NUMERIC),
+    (6, 'Массовая доля белка', NULL::INTEGER, 9.0::NUMERIC),
+    (6, 'Массовая доля жира', NULL::INTEGER, 24.0::NUMERIC),
+    (6, 'Срок годности', 10, NULL::NUMERIC),
+    (6, 'Температура хранения', NULL::INTEGER, 2.0::NUMERIC),
+    (16, 'Массовая доля белка', NULL::INTEGER, 12.5::NUMERIC),
+    (16, 'Массовая доля жира', NULL::INTEGER, 22.0::NUMERIC),
+    (16, 'Срок годности', 20, NULL::NUMERIC),
+    (16, 'Температура хранения', NULL::INTEGER, 2.0::NUMERIC)
+) v(product_id, name, value_int, value_real)
+JOIN product p ON p.id = v.product_id
+JOIN parameter_definition pd
+  ON pd.classifier_node_id = 1 AND pd.name = v.name
+ON CONFLICT (product_id, parameter_definition_id) DO UPDATE
+SET value_int = EXCLUDED.value_int,
+    value_real = EXCLUDED.value_real,
+    value_str = NULL,
+    value_enum_id = NULL;
+
+-- Характеристики: структура продукта и тип оболочки.
+INSERT INTO product_attribute_value (product_id, enum_value_id)
+SELECT v.product_id, ev.id
+FROM (VALUES
+    (1, 1, 'Гомогенная'), (2, 1, 'Гомогенная'), (3, 1, 'Со шпиком'),
+    (4, 1, 'С кусочками'), (5, 1, 'Гомогенная'), (6, 1, 'Гомогенная'),
+    (1, 3, 'Целлофан'), (2, 3, 'Целлофан'), (3, 3, 'Целлофан'),
+    (4, 3, 'Натуральная'), (5, 3, 'Белок'), (6, 3, 'Натуральная'),
+    (16, 1, 'Гомогенная'), (16, 3, 'Целлофан')
+) v(product_id, enum_definition_id, value_str)
+JOIN enum_value ev
+  ON ev.enum_definition_id = v.enum_definition_id
+ AND ev.value_str = v.value_str
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM product_attribute_value pav
+    WHERE pav.product_id = v.product_id
+      AND pav.enum_value_id = ev.id
+);
+
 -- Обновим материализованное представление после вставок
+SELECT refresh_aggregates();
+
+-- =====================================================
+-- 18. Расширенный каталог колбасных изделий
+-- =====================================================
+
+-- В каждой конечной категории колбас добавлено не менее пяти изделий.
+INSERT INTO product (
+    id, classifier_node_id, sku, name, price, supplier, weight_gram,
+    designation, product_type_code, unit_id
+) VALUES
+    (17, 12, 'Докторская ГОСТ категория А', 'Колбаса докторская ГОСТ', 520, 'ОАО «Мясокомбинат Клинский»', 500, 'КЛ-01.002', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (18, 12, 'Молочная варёная', 'Колбаса молочная', 390, 'ООО «Мясной стандарт»', 500, 'КЛ-01.003', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (19, 13, 'Сосиски сливочные', 'Сосиски сливочные', 360, 'ООО «Мясной стандарт»', 400, 'СО-01.001', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (20, 13, 'Сардельки говяжьи', 'Сардельки говяжьи', 440, 'АО «Велес»', 500, 'СО-01.002', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (21, 13, 'Сосиски молочные', 'Сосиски молочные', 330, 'ООО «Ромашка»', 350, 'СО-01.003', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (22, 13, 'Сардельки свиные', 'Сардельки свиные', 410, 'ООО «Мясной стандарт»', 500, 'СО-01.004', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (23, 13, 'Сосиски венские', 'Сосиски венские', 470, 'АО «Велес»', 400, 'СО-01.005', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (24, 14, 'Зельц белый', 'Зельц белый', 310, 'ООО «Традиция»', 400, 'ЗЛ-01.001', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (25, 14, 'Зельц красный', 'Зельц красный', 340, 'ООО «Традиция»', 400, 'ЗЛ-01.002', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (26, 14, 'Зельц домашний', 'Зельц домашний', 390, 'ИП «Мясной двор»', 500, 'ЗЛ-01.003', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (27, 14, 'Зельц с языком', 'Зельц с языком', 520, 'ООО «Традиция»', 400, 'ЗЛ-01.004', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (28, 14, 'Зельц свиной', 'Зельц свиной', 360, 'ИП «Мясной двор»', 500, 'ЗЛ-01.005', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (29, 15, 'Ливерная нежная', 'Колбаса ливерная нежная', 125, 'ООО «Традиция»', 300, 'ЛВ-01.004', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (30, 15, 'Ливерная печёночная ГОСТ', 'Колбаса ливерная печёночная ГОСТ', 145, 'АО «Велес»', 300, 'ЛВ-01.005', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (31, 16, 'Паштет печёночный', 'Паштет печёночный', 180, 'ООО «Традиция»', 250, 'ПШ-01.001', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (32, 16, 'Паштет сливочный', 'Паштет сливочный', 220, 'ООО «Ромашка»', 250, 'ПШ-01.002', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (33, 16, 'Паштет домашний', 'Паштет домашний', 260, 'ИП «Мясной двор»', 300, 'ПШ-01.003', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (34, 16, 'Паштет с грибами', 'Паштет с грибами', 290, 'ООО «Традиция»', 250, 'ПШ-01.004', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (35, 16, 'Паштет куриный', 'Паштет куриный', 210, 'ООО «Ромашка»', 250, 'ПШ-01.005', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (36, 17, 'Салями классическая', 'Салями классическая', 720, 'АО «Мясной край»', 300, 'СЛ-01.001', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (37, 17, 'Салями миланская', 'Салями миланская', 890, 'АО «Мясной край»', 300, 'СЛ-01.002', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (38, 17, 'Салями охотничья', 'Салями охотничья', 650, 'ООО «Дымовское»', 250, 'СЛ-01.003', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (39, 17, 'Салями венгерская', 'Салями венгерская', 940, 'ООО «Дымовское»', 300, 'СЛ-01.004', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (40, 17, 'Салями сырокопчёная', 'Салями сырокопчёная', 860, 'АО «Мясной край»', 300, 'СЛ-01.005', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (41, 18, 'Чоризо классическая', 'Чоризо классическая', 980, 'ООО «Дымовское»', 300, 'ЧР-01.001', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (42, 18, 'Чоризо острая', 'Чоризо острая', 1020, 'ООО «Дымовское»', 300, 'ЧР-01.002', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (43, 18, 'Чоризо с паприкой', 'Чоризо с паприкой', 1090, 'АО «Мясной край»', 300, 'ЧР-01.003', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (44, 18, 'Чоризо деревенская', 'Чоризо деревенская', 930, 'ООО «Копчёности»', 350, 'ЧР-01.004', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (45, 18, 'Чоризо мини', 'Чоризо мини', 760, 'ООО «Копчёности»', 250, 'ЧР-01.005', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (46, 19, 'Ветчина классическая', 'Ветчина классическая', 680, 'АО «Мясной край»', 500, 'ВТ-01.001', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (47, 19, 'Ветчина с пряностями', 'Ветчина с пряностями', 740, 'ООО «Мясной стандарт»', 500, 'ВТ-01.002', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (48, 19, 'Ветчина куриная', 'Ветчина куриная', 590, 'ООО «Ромашка»', 450, 'ВТ-01.003', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (49, 19, 'Ветчина запечённая', 'Ветчина запечённая', 820, 'АО «Мясной край»', 500, 'ВТ-01.004', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (50, 19, 'Ветчина с сыром', 'Ветчина с сыром', 790, 'ООО «Мясной стандарт»', 450, 'ВТ-01.005', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (51, 20, 'Карбонат классический', 'Карбонат классический', 760, 'АО «Мясной край»', 500, 'КБ-01.001', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (52, 20, 'Карбонат копчёный', 'Карбонат копчёный', 820, 'ООО «Дымовское»', 500, 'КБ-01.002', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (53, 20, 'Карбонат с чесноком', 'Карбонат с чесноком', 790, 'ООО «Копчёности»', 450, 'КБ-01.003', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (54, 20, 'Карбонат праздничный', 'Карбонат праздничный', 880, 'АО «Мясной край»', 500, 'КБ-01.004', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (55, 20, 'Карбонат фермерский', 'Карбонат фермерский', 720, 'ИП «Мясной двор»', 450, 'КБ-01.005', 'part', (SELECT id FROM unit WHERE symbol = 'шт'))
+ON CONFLICT (id) DO UPDATE SET
+    classifier_node_id = EXCLUDED.classifier_node_id,
+    sku = EXCLUDED.sku,
+    name = EXCLUDED.name,
+    price = EXCLUDED.price,
+    supplier = EXCLUDED.supplier,
+    weight_gram = EXCLUDED.weight_gram,
+    designation = EXCLUDED.designation,
+    product_type_code = EXCLUDED.product_type_code,
+    unit_id = EXCLUDED.unit_id;
+
+SELECT sync_id_sequences();
+
+-- Параметры для сырья, материалов, полуфабрикатов и наборов.
+INSERT INTO parameter_definition (classifier_node_id, name, unit_id, value_type, sort_order)
+SELECT v.classifier_node_id, v.name, u.id, v.value_type, v.sort_order
+FROM (VALUES
+    (21, 'Массовая доля влаги', '%', 'real', 1),
+    (21, 'Срок хранения', 'сут', 'int', 2),
+    (21, 'Температура хранения', '°C', 'real', 3),
+    (24, 'Длина единицы', 'м', 'real', 1),
+    (24, 'Количество в упаковке', 'шт', 'int', 2),
+    (25, 'Выход полуфабриката', '%', 'real', 1),
+    (25, 'Срок хранения', 'сут', 'int', 2),
+    (26, 'Количество изделий', 'шт', 'int', 1),
+    (26, 'Масса набора', 'кг', 'real', 2)
+) v(classifier_node_id, name, symbol, value_type, sort_order)
+JOIN unit u ON u.symbol = v.symbol
+ON CONFLICT (classifier_node_id, name) DO UPDATE SET
+    unit_id = EXCLUDED.unit_id,
+    value_type = EXCLUDED.value_type,
+    sort_order = EXCLUDED.sort_order;
+
+INSERT INTO enum_definition (classifier_node_id, description) VALUES
+    (21, 'Вид сырья'),
+    (24, 'Тип упаковки'),
+    (25, 'Тип полуфабриката'),
+    (26, 'Комплектация набора')
+ON CONFLICT (classifier_node_id) DO UPDATE SET description = EXCLUDED.description;
+
+INSERT INTO enum_value (enum_definition_id, value_str, sort_order)
+SELECT ed.id, v.value_str, v.sort_order
+FROM enum_definition ed
+JOIN (VALUES
+    (21, 'Мясное сырьё', 1), (21, 'Молочный компонент', 2), (21, 'Специя или добавка', 3),
+    (24, 'Полиамидная упаковка', 1), (24, 'Картонная упаковка', 2),
+    (25, 'Фарш', 1), (25, 'Мясная смесь', 2),
+    (26, 'Подарочный набор', 1), (26, 'Ассорти изделий', 2)
+) v(classifier_node_id, value_str, sort_order)
+  ON ed.classifier_node_id = v.classifier_node_id
+WHERE NOT EXISTS (
+    SELECT 1 FROM enum_value ev
+    WHERE ev.enum_definition_id = ed.id AND ev.value_str = v.value_str
+);
+
+-- Поля параметров заполняются для всех товаров соответствующих классов.
+INSERT INTO product_parameter_value (product_id, parameter_definition_id, value_int, value_real)
+SELECT p.id, pd.id,
+       CASE WHEN pd.value_type = 'int' THEN
+           CASE WHEN pd.name = 'Срок хранения' THEN 30
+                WHEN pd.name = 'Количество в упаковке' THEN 1
+                WHEN pd.name = 'Количество изделий' THEN 2 END
+       END,
+       CASE WHEN pd.value_type = 'real' THEN
+           CASE WHEN pd.name = 'Массовая доля влаги' THEN 68
+                WHEN pd.name = 'Температура хранения' THEN 2
+                WHEN pd.name = 'Длина единицы' THEN 1
+                WHEN pd.name = 'Выход полуфабриката' THEN 98
+                WHEN pd.name = 'Масса набора' THEN 1.15 END
+       END
+FROM product p
+JOIN parameter_definition pd ON (
+    pd.classifier_node_id = 21 AND p.classifier_node_id IN (22, 23)
+    OR pd.classifier_node_id = 24 AND p.classifier_node_id = 24
+    OR pd.classifier_node_id = 25 AND p.classifier_node_id = 25
+    OR pd.classifier_node_id = 26 AND p.classifier_node_id = 26
+)
+ON CONFLICT (product_id, parameter_definition_id) DO UPDATE SET
+    value_int = EXCLUDED.value_int, value_real = EXCLUDED.value_real,
+    value_str = NULL, value_enum_id = NULL;
+
+-- Характеристики соответствующих классов, чтобы карточки не оставались пустыми.
+INSERT INTO product_attribute_value (product_id, enum_value_id)
+SELECT p.id, ev.id
+FROM product p
+JOIN enum_definition ed ON (
+    (ed.classifier_node_id = 21 AND p.classifier_node_id IN (22, 23))
+    OR ed.classifier_node_id = p.classifier_node_id
+)
+JOIN enum_value ev ON ev.enum_definition_id = ed.id
+WHERE ev.sort_order = CASE
+    WHEN p.classifier_node_id IN (22, 23) THEN 1
+    WHEN p.classifier_node_id = 24 THEN 1
+    WHEN p.classifier_node_id = 25 THEN 1
+    WHEN p.classifier_node_id = 26 THEN 1
+END
+AND NOT EXISTS (
+    SELECT 1 FROM product_attribute_value pav
+    WHERE pav.product_id = p.id AND pav.enum_value_id = ev.id
+);
+
+-- Заполняем параметры всех колбасных изделий, включая добавленные выше.
+WITH RECURSIVE sausage_nodes AS (
+    SELECT id, id AS root_id FROM classifier_node WHERE id IN (2, 3, 4)
+    UNION ALL
+    SELECT cn.id, sn.root_id
+    FROM classifier_node cn
+    JOIN sausage_nodes sn ON cn.parent_id = sn.id
+)
+INSERT INTO product_parameter_value (product_id, parameter_definition_id, value_str, value_int, value_real)
+SELECT p.id, pd.id,
+       CASE
+           WHEN pd.name = 'Порода древесины' THEN 'бук'
+           ELSE NULL
+       END,
+       CASE
+           WHEN pd.name = 'Время варки' THEN CASE
+               WHEN p.classifier_node_id IN (15, 16) THEN 65 ELSE 90 END
+           WHEN pd.name = 'Выдержка после копчения' THEN 5
+           WHEN pd.name = 'Выдержка посола' THEN 3
+           WHEN pd.name = 'Срок годности' THEN 20
+           ELSE NULL
+       END,
+       CASE
+           WHEN pd.name = 'Температура варки' THEN CASE
+               WHEN p.classifier_node_id IN (15, 16) THEN 75 ELSE 72 END
+           WHEN pd.name = 'Диаметр батона' THEN CASE
+               WHEN p.classifier_node_id IN (13, 14) THEN 32 ELSE 65 END
+           WHEN pd.name = 'Содержание соли' THEN 2.4
+           WHEN pd.name = 'Длительность копчения' THEN 8
+           WHEN pd.name = 'Выход продукта' THEN 85
+           WHEN pd.name = 'Массовая доля белка' THEN 12
+           WHEN pd.name = 'Массовая доля жира' THEN 24
+           WHEN pd.name = 'Температура хранения' THEN 2
+           ELSE NULL
+       END
+FROM product p
+JOIN sausage_nodes sn ON sn.id = p.classifier_node_id
+JOIN parameter_definition pd ON (
+    pd.classifier_node_id = 1 OR pd.classifier_node_id = sn.root_id
+)
+WHERE p.classifier_node_id IN (
+    SELECT id FROM sausage_nodes
+)
+AND NOT EXISTS (
+    SELECT 1 FROM product_parameter_value ppv
+    WHERE ppv.product_id = p.id AND ppv.parameter_definition_id = pd.id
+);
+
+-- Характеристики всех колбас: оболочка и структура, а для копчёных также температура копчения.
+INSERT INTO product_attribute_value (product_id, enum_value_id)
+SELECT p.id, ev.id
+FROM product p
+JOIN enum_value ev ON (
+    ev.enum_definition_id = 3
+    OR (ev.enum_definition_id = 1 AND p.classifier_node_id IN (12, 13, 14, 15, 16))
+    OR (ev.enum_definition_id = 2 AND p.classifier_node_id = 13)
+    OR (ev.enum_definition_id = 4 AND p.classifier_node_id IN (17, 18))
+)
+WHERE p.classifier_node_id IN (12, 13, 14, 15, 16, 17, 18, 19, 20)
+AND ev.sort_order = CASE
+    WHEN ev.enum_definition_id = 3 THEN CASE
+        WHEN p.classifier_node_id IN (17, 18) THEN 2 ELSE 5 END
+    WHEN ev.enum_definition_id = 1 THEN CASE
+        WHEN p.classifier_node_id IN (13, 14) THEN 1 ELSE 2 END
+    WHEN ev.enum_definition_id = 2 THEN 1
+    WHEN ev.enum_definition_id = 4 THEN 1
+END
+AND NOT EXISTS (
+    SELECT 1 FROM product_attribute_value pav
+    WHERE pav.product_id = p.id AND pav.enum_value_id = ev.id
+);
+
+-- Обновляем агрегаты после добавления новых товаров и значений.
+SELECT refresh_aggregates();
+
+-- =====================================================
+-- 19. Исправление ассортимента копчёных и цельномышечных изделий
+-- =====================================================
+
+-- Ранее изделия с названием «Карбонат» ошибочно были размещены в
+-- категории «Буженина». Переносим их в правильную категорию.
+UPDATE product
+SET classifier_node_id = 11
+WHERE id BETWEEN 51 AND 55
+  AND name ILIKE '%Карбонат%';
+
+-- Заполняем пустые категории реалистичными изделиями.
+INSERT INTO product (
+    id, classifier_node_id, sku, name, price, supplier, weight_gram,
+    designation, product_type_code, unit_id
+) VALUES
+    (56, 7, 'ВК-01.001', 'Колбаса варёно-копчёная классическая', 690, 'ООО «Дымовское»', 450, 'ВК-01.001', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (57, 7, 'ВК-01.002', 'Колбаса варёно-копчёная с чесноком', 740, 'АО «Мясной край»', 500, 'ВК-01.002', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (58, 7, 'ВК-01.003', 'Колбаса варёно-копчёная праздничная', 820, 'ООО «Копчёности»', 500, 'ВК-01.003', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (59, 7, 'ВК-01.004', 'Колбаса варёно-копчёная фермерская', 760, 'ИП «Мясной двор»', 450, 'ВК-01.004', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (60, 7, 'ВК-01.005', 'Колбаса варёно-копчёная с пряностями', 790, 'АО «Велес»', 500, 'ВК-01.005', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (61, 8, 'ПК-01.001', 'Колбаса полукопчёная охотничья', 610, 'ООО «Дымовское»', 400, 'ПК-01.001', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (62, 8, 'ПК-01.002', 'Колбаса полукопчёная московская', 680, 'АО «Мясной край»', 450, 'ПК-01.002', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (63, 8, 'ПК-01.003', 'Колбаса полукопчёная чесночная', 640, 'ООО «Копчёности»', 450, 'ПК-01.003', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (64, 8, 'ПК-01.004', 'Колбаса полукопчёная деревенская', 590, 'ИП «Мясной двор»', 500, 'ПК-01.004', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (65, 8, 'ПК-01.005', 'Колбаса полукопчёная с сыром', 720, 'ООО «Мясной стандарт»', 450, 'ПК-01.005', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (66, 20, 'БУ-01.001', 'Буженина классическая', 760, 'АО «Мясной край»', 500, 'БУ-01.001', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (67, 20, 'БУ-01.002', 'Буженина запечённая', 820, 'ООО «Мясной стандарт»', 500, 'БУ-01.002', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (68, 20, 'БУ-01.003', 'Буженина с чесноком', 790, 'ООО «Копчёности»', 450, 'БУ-01.003', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (69, 20, 'БУ-01.004', 'Буженина фермерская', 730, 'ИП «Мясной двор»', 500, 'БУ-01.004', 'part', (SELECT id FROM unit WHERE symbol = 'шт')),
+    (70, 20, 'БУ-01.005', 'Буженина праздничная', 880, 'АО «Велес»', 550, 'БУ-01.005', 'part', (SELECT id FROM unit WHERE symbol = 'шт'))
+ON CONFLICT (id) DO UPDATE SET
+    classifier_node_id = EXCLUDED.classifier_node_id,
+    sku = EXCLUDED.sku,
+    name = EXCLUDED.name,
+    price = EXCLUDED.price,
+    supplier = EXCLUDED.supplier,
+    weight_gram = EXCLUDED.weight_gram,
+    designation = EXCLUDED.designation,
+    product_type_code = EXCLUDED.product_type_code,
+    unit_id = EXCLUDED.unit_id;
+
+SELECT sync_id_sequences();
+
+-- Значения всех параметров для новых и перенесённых изделий.
+WITH RECURSIVE sausage_nodes AS (
+    SELECT id, id AS root_id FROM classifier_node WHERE id IN (2, 3, 4)
+    UNION ALL
+    SELECT cn.id, sn.root_id
+    FROM classifier_node cn
+    JOIN sausage_nodes sn ON cn.parent_id = sn.id
+)
+INSERT INTO product_parameter_value (product_id, parameter_definition_id, value_str, value_int, value_real)
+SELECT p.id, pd.id,
+       CASE WHEN pd.name = 'Порода древесины' THEN 'бук' ELSE NULL END,
+       CASE
+           WHEN pd.name = 'Время варки' THEN 75
+           WHEN pd.name = 'Выдержка после копчения' THEN 5
+           WHEN pd.name = 'Выдержка посола' THEN 3
+           WHEN pd.name = 'Срок годности' THEN 20
+           ELSE NULL
+       END,
+       CASE
+           WHEN pd.name = 'Температура варки' THEN 72
+           WHEN pd.name = 'Диаметр батона' THEN 65
+           WHEN pd.name = 'Содержание соли' THEN 2.4
+           WHEN pd.name = 'Длительность копчения' THEN 8
+           WHEN pd.name = 'Выход продукта' THEN 85
+           WHEN pd.name = 'Массовая доля белка' THEN 12
+           WHEN pd.name = 'Массовая доля жира' THEN 24
+           WHEN pd.name = 'Температура хранения' THEN 2
+           ELSE NULL
+       END
+FROM product p
+JOIN sausage_nodes sn ON sn.id = p.classifier_node_id
+JOIN parameter_definition pd ON pd.classifier_node_id IN (1, sn.root_id)
+WHERE p.classifier_node_id IN (7, 8, 11, 20)
+ON CONFLICT (product_id, parameter_definition_id) DO UPDATE SET
+    value_str = EXCLUDED.value_str,
+    value_int = EXCLUDED.value_int,
+    value_real = EXCLUDED.value_real,
+    value_enum_id = NULL;
+
+-- Структура и оболочка для новых изделий.
+INSERT INTO product_attribute_value (product_id, enum_value_id)
+SELECT p.id, ev.id
+FROM product p
+JOIN enum_value ev ON (
+    ev.enum_definition_id = 1 AND p.classifier_node_id IN (7, 8, 11, 20)
+    OR ev.enum_definition_id = 3 AND p.classifier_node_id IN (7, 8, 11, 20)
+)
+WHERE p.classifier_node_id IN (7, 8, 11, 20)
+  AND ev.sort_order = CASE
+      WHEN ev.enum_definition_id = 1 THEN 2
+      ELSE 5
+  END
+  AND NOT EXISTS (
+      SELECT 1 FROM product_attribute_value pav
+      WHERE pav.product_id = p.id AND pav.enum_value_id = ev.id
+  );
+
 SELECT refresh_aggregates();
 
 -- Примеры вызова:

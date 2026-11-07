@@ -5,13 +5,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Классификатор изделий</title>
-    <link rel="stylesheet" href="{% static 'css/style.css' %}">
+    <link rel="stylesheet" href="{% static 'css/style.css' %}?v=202611080123">
 </head>
 <body>
     {% csrf_token %}
 
     <header class="header">
-        <h1>Классификатор изделий</h1>
+        <div>
+            <h1>Классификатор изделий</h1>
+            <div class="user-info">
+                <span class="user-name">{{ request.user.username }}</span>
+                <span class="user-role">{% if request.user.is_staff %}администратор{% else %}клиент{% endif %}</span>
+                <a href="{% url 'logout' %}">Выйти</a>
+            </div>
+        </div>
         <nav class="tabs">
             <button type="button" class="tab-btn active" data-tab="catalog">Каталог</button>
             <button type="button" class="tab-btn" data-tab="bom">Спецификация (BOM)</button>
@@ -28,12 +35,25 @@
                 <div class="toolbar">
                     <button type="button" id="openModalBtn">+ Добавить</button>
                     <button type="button" id="openMoveModalBtn">Переместить</button>
+                    <button type="button" id="openProductSearchBtn">Поиск изделий</button>
                 </div>
                 <h2>Дерево категорий</h2>
                 <div id="treeContainer"><p class="muted">Загрузка...</p></div>
             </aside>
 
             <main class="content">
+                <div id="productSearchPanel" class="info" hidden>
+                    <h3>Поиск изделий по параметрам</h3>
+                    <form id="productSearchForm">
+                        <div class="form-row">
+                            <label for="productSearchCategory">Класс:</label>
+                            <select id="productSearchCategory"></select>
+                        </div>
+                        <div id="productSearchFilters"></div>
+                        <button type="submit">Найти изделия</button>
+                        <button type="button" id="closeProductSearchPanel">Закрыть</button>
+                    </form>
+                </div>
                 <div id="contentContainer">
                     <p class="muted">Выберите категорию в дереве слева.</p>
                 </div>
@@ -68,6 +88,13 @@
                 <b>На 1 изделие</b> &mdash; сколько уходит на одно выбранное изделие с учётом всех уровней.
                 Пометка <span class="badge">из базы</span> значит, что норма взята у базового изделия (для модификаций).
             </p>
+            <form id="bomAddItemForm" class="form-row">
+                <select id="bomComponentSelect" required></select>
+                <input type="number" id="bomItemQuantity" min="0.001" step="any" value="1" required>
+                <input type="number" id="bomItemPerQuantity" min="0.001" step="any" value="1" required>
+                <select id="bomItemUnitSelect" required></select>
+                <button type="submit">Добавить компонент</button>
+            </form>
             <div id="bomTree"></div>
 
             <h3>2. Расчёт потребности</h3>
@@ -112,18 +139,42 @@
     <!-- ======================= СПРАВОЧНИКИ ======================= -->
     <section id="tab-refs" class="tab" hidden>
         <h2>Единицы измерения</h2>
-        <p class="hint">
-            Единицы сгруппированы по размерностям (масса, длина...). Коэффициент &mdash; во сколько раз
-            единица больше базовой своей размерности. По нему спецификация переводит граммы в килограммы и т.п.
-        </p>
+        <form id="unitDefinitionForm" class="form-row">
+            <select id="unitDimensionSelect" required></select>
+            <input id="unitName" placeholder="Название единицы" required>
+            <input id="unitSymbol" placeholder="Обозначение" required>
+            <input id="unitFactor" type="number" step="any" value="1" placeholder="Коэффициент" required>
+            <input id="unitOffset" type="number" step="any" value="0" placeholder="Смещение" required>
+            <button type="submit">Добавить единицу</button>
+        </form>
         <div id="unitsTable"><p class="muted">Загрузка...</p></div>
 
         <h2>Параметры</h2>
-        <p class="hint">Параметры задаются для категории и наследуются всеми её подкатегориями.</p>
+        <form id="parameterDefinitionForm" class="form-row">
+            <select id="parameterClassSelect" required></select>
+            <input id="parameterName" placeholder="Название параметра" required>
+            <select id="parameterType">
+                <option value="str">Строка</option>
+                <option value="int">Целое</option>
+                <option value="real">Дробное</option>
+                <option value="enum">Перечисление</option>
+            </select>
+            <select id="parameterUnitSelect"></select>
+            <button type="submit">Добавить параметр</button>
+        </form>
         <div id="paramsTable"><p class="muted">Загрузка...</p></div>
 
         <h2>Перечисления</h2>
-        <p class="hint">Списки допустимых значений (например, сорт или вид оболочки).</p>
+        <form id="enumDefinitionForm" class="form-row">
+            <select id="enumClassSelect" required></select>
+            <input id="enumDescription" placeholder="Название перечисления" required>
+            <button type="submit">Создать перечисление</button>
+        </form>
+        <form id="enumValueForm" class="form-row">
+            <select id="enumDefinitionSelect" required></select>
+            <input id="enumValue" placeholder="Новое значение" required>
+            <button type="submit">Добавить значение</button>
+        </form>
         <div id="enumsTable"><p class="muted">Загрузка...</p></div>
     </section>
 
@@ -146,6 +197,10 @@
             <div class="field" id="unit_field">
                 <label for="unit">Единица измерения (кг, шт...):</label>
                 <input type="text" id="unit" name="unit">
+                <label for="base_unit_id">Базовая единица количества:</label>
+                <select id="base_unit_id" name="base_unit_id">
+                    <option value="">— Не выбрана —</option>
+                </select>
             </div>
 
             <div class="field">
@@ -218,9 +273,25 @@
         </form>
     </div>
 
-    <script src="{% static 'js/common.js' %}"></script>
-    <script src="{% static 'js/home.js' %}"></script>
-    <script src="{% static 'js/bom.js' %}"></script>
-    <script src="{% static 'js/refs.js' %}"></script>
+    <script src="{% static 'js/common.js' %}?v=202611080037"></script>
+    <script src="{% static 'js/home.js' %}?v=202611080126"></script>
+    <script src="{% static 'js/bom.js' %}?v=202611072219"></script>
+    <script src="{% static 'js/refs.js' %}?v=202611080046"></script>
+    <script>
+        window.addEventListener('load', function () {
+            if (window.__treeLoadStarted) return;
+            var container = document.getElementById('treeContainer');
+            if (typeof loadTree !== 'function') {
+                container.innerHTML = '<p class="error">Не удалось загрузить JavaScript каталога. Обновите страницу через Ctrl+F5.</p>';
+                return;
+            }
+            loadTree();
+            if (typeof loadBaseUnits === 'function') {
+                loadBaseUnits().catch(function (error) {
+                    showMessage(error.message, 'error');
+                });
+            }
+        });
+    </script>
 </body>
 </html>
