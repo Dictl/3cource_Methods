@@ -159,7 +159,7 @@ function loadBomTree() {
             box.innerHTML = html;
 
             if (treeRows.length) {
-                var treeHint = '<p class="hint">Дерево состава (для проверки):</p>' + renderTable([
+                var treeHint = '<h4>Дерево состава</h4>' + renderTable([
                     {
                         title: 'Компонент',
                         render: function (row) {

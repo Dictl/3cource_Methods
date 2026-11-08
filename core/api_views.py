@@ -754,18 +754,18 @@ def api_update_product_attribute(request):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
-"Удалить атрибут товара (product_attribute_value) по id"
+"Удалить характеристику товара (product_attribute_value) по id"
 @csrf_exempt
 @require_http_methods(["DELETE"])
 def api_delete_product_attribute(request):
     try:
         payload = _parse_json(request)
-        product_id = payload.get("product_id")
-        if product_id in (None, ""):
-            return _json_error("product_id обязателен")
+        attribute_id = payload.get("product_attribute_value_id")
+        if attribute_id in (None, ""):
+            return _json_error("product_attribute_value_id обязателен")
 
-        delete_product_attribute(int(product_id))
-        return JsonResponse({"ok": True, "data": {"deleted": int(product_id)}})
+        delete_product_attribute(int(attribute_id))
+        return JsonResponse({"ok": True, "data": {"deleted": int(attribute_id)}})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 

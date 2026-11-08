@@ -1,0 +1,11 @@
+{% load static %}
+{% if field.errors %}
+    <p class="auth-error">{{ field.errors|striptags }}</p>
+{% endif %}
+<label for="{{ field.id_for_label }}">
+    {{ label }}{% if field.field.required %}<span class="auth-required">*</span>{% endif %}
+</label>
+{{ field }}
+{% if field.help_text %}
+    <p class="auth-hint">{{ field.help_text }}</p>
+{% endif %}

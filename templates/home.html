@@ -64,14 +64,6 @@
 
     <!-- ======================= СПЕЦИФИКАЦИЯ ======================= -->
     <section id="tab-bom" class="tab" hidden>
-        <div class="info">
-            <b>Что такое спецификация (BOM, bill of materials)?</b>
-            Это список того, из чего состоит изделие и сколько каждого компонента нужно.
-            Компоненты сами могут иметь состав, поэтому получается дерево
-            (батон колбасы &rarr; фарш &rarr; говядина, свинина, соль...).
-            Материалы и покупные изделия своего состава не имеют &mdash; это «листья» дерева.
-        </div>
-
         <div class="form-row">
             <label for="bomProductSelect">Изделие:</label>
             <select id="bomProductSelect">
@@ -83,14 +75,11 @@
             <h2 id="bomTitle"></h2>
 
             <h3>1. Состав изделия</h3>
-            <p class="hint">
-                <b>Норма</b> &mdash; сколько компонента идёт на одну единицу родителя.
-                <b>На 1 изделие</b> &mdash; сколько уходит на одно выбранное изделие с учётом всех уровней.
-                Пометка <span class="badge">из базы</span> значит, что норма взята у базового изделия (для модификаций).
-            </p>
             <form id="bomAddItemForm" class="form-row">
                 <select id="bomComponentSelect" required></select>
+                <label for="bomItemQuantity">Норма</label>
                 <input type="number" id="bomItemQuantity" min="0.001" step="any" value="1" required>
+                <label for="bomItemPerQuantity">На 1</label>
                 <input type="number" id="bomItemPerQuantity" min="0.001" step="any" value="1" required>
                 <select id="bomItemUnitSelect" required></select>
                 <button type="submit">Добавить компонент</button>
@@ -98,10 +87,6 @@
             <div id="bomTree"></div>
 
             <h3>2. Расчёт потребности</h3>
-            <p class="hint">
-                Сколько сырья и материалов нужно, чтобы выпустить указанное количество изделий.
-                Считаются только «листья» дерева. Если выбрать класс &mdash; покажутся компоненты только этого класса.
-            </p>
             <form id="bomCalcForm" class="form-row">
                 <label for="bomQuantity">Количество:</label>
                 <input type="number" id="bomQuantity" value="1000" min="1" step="1">
@@ -116,10 +101,6 @@
             <div id="bomCalcByClass"></div>
 
             <h3>3. Модификации</h3>
-            <p class="hint">
-                Модификация &mdash; новое изделие на основе существующего (например, тот же батон, но 800 г).
-                Состав копируется из базового изделия с пометкой «из базы».
-            </p>
             <form id="bomModForm" class="form-row">
                 <input type="text" id="modName" placeholder="Название модификации" required>
                 <input type="text" id="modDesignation" placeholder="Обозначение (необязательно)">
@@ -127,7 +108,6 @@
             </form>
 
             <h3>4. История изменений</h3>
-            <p class="hint">Журнал изменений спецификации. Номер изменения присваивается автоматически.</p>
             <div id="bomChanges"></div>
             <form id="bomChangeForm" class="form-row">
                 <input type="text" id="changeDescription" placeholder="Описание изменения" required>

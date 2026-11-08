@@ -182,40 +182,60 @@ def search_delete_category(delete_id):
     delete_id = int(delete_id)
     all_base = base_output()
 
-    # Проверка на наличие товаров в самой категории
-    if Product.objects.filter(classifier_node_id=delete_id).exists():
-        raise ValueError("Нельзя удалить категорию, содержащую товары")
-
-    # Получаем все потомки удаляемей категории
-    descendants = set()
+    # Вся ветка: сама вершина и все потомки
+    descendants = {delete_id}
     stack = [delete_id]
     while stack:
         current_id = stack.pop()
-        descendants.add(current_id)
         for node in all_base:
-            if node.parent_id == current_id:
+            if node.parent_id == current_id and node.id not in descendants:
+                descendants.add(node.id)
                 stack.append(node.id)
 
-    # Определяем терминальные узлы (без потомков)
-    terminal_node_ids = [node_id for node_id in descendants
-                         if not any(child.id == node_id for child in search_child_nodes(all_base, node_id))]
+    # Проверка на наличие товаров в поддереве
+    if Product.objects.filter(classifier_node_id__in=descendants).exists():
+        raise ValueError("Нельзя удалить категорию, содержащую товары")
 
-    # Проверяем, что в терминальных узлах нет товаров
-    for node_id in terminal_node_ids:
-        if Product.objects.filter(classifier_node_id=node_id).exists():
-            raise ValueError(f"Нельзя удалить категорию, у которой есть терминальные узлы с товарами. Узел {node_id} содержит товары")
+    # Удаляем связанные сущности (вся ветка)
+    param_ids = list(ParameterDefinition.objects.filter(classifier_node_id__in=descendants)
+                     .values_list('id', flat=True))
+    if param_ids:
+        ProductParameterValue.objects.filter(parameter_definition_id__in=param_ids).delete()
+        ParameterNumericConstraint.objects.filter(parameter_definition_id__in=param_ids).delete()
+        ParameterDefinition.objects.filter(id__in=param_ids).delete()
 
-    # Удаляем все потомки (начиная с самых глубоких)
-    for node_id in sorted(descendants, reverse=True):  # Сортируем в обратном порядке для правильного удаления
-        if node_id != delete_id:  # Не удаляем саму категорию
-            node = ClassifierNode.objects.get(id=node_id)
-            node.delete()
+    enum_def_ids = list(EnumDefinition.objects.filter(classifier_node_id__in=descendants)
+                        .values_list('id', flat=True))
+    if enum_def_ids:
+        enum_value_ids = list(EnumValue.objects.filter(enum_definition_id__in=enum_def_ids)
+                              .values_list('id', flat=True))
+        if enum_value_ids:
+            ProductAttributeValue.objects.filter(enum_value_id__in=enum_value_ids).delete()
+            ProductParameterValue.objects.filter(value_enum_id__in=enum_value_ids).delete()
+            EnumValue.objects.filter(id__in=enum_value_ids).delete()
+        EnumDefinition.objects.filter(id__in=enum_def_ids).delete()
 
-    ParameterDefinition.objects.filter(classifier_node_id=delete_id).delete()
+    # Удаляем все вершины в глубинном порядке (дети -> родитель)
+    children_map = {}
+    for node in all_base:
+        if node.id in descendants and node.parent_id in descendants:
+            children_map.setdefault(node.parent_id, []).append(node.id)
 
-    # Удаляем саму категорию
-    category = ClassifierNode.objects.get(id=delete_id)
-    category.delete()
+    ordered = []
+    visited = set()
+
+    def visit(node_id):
+        if node_id in visited:
+            return
+        visited.add(node_id)
+        for child_id in children_map.get(node_id, []):
+            visit(child_id)
+        ordered.append(node_id)
+
+    visit(delete_id)
+
+    for node_id in ordered:
+        ClassifierNode.objects.filter(id=node_id).delete()
 
 "Удаляет продукт и связанные с ним значения параметров(product_parameter_value)"
 def search_delete_product(delete_id):
@@ -556,10 +576,10 @@ def get_product_enums(product_id):
             })
     return result
 
-"удаление product_attribute_values"
-def delete_product_attribute(product_id):
-    product_id = int(product_id)
-    elem = ProductAttributeValue.objects.filter(id=product_id).first()
+"удаление product_attribute_values по id самого атрибута"
+def delete_product_attribute(attribute_id):
+    attribute_id = int(attribute_id)
+    elem = ProductAttributeValue.objects.filter(id=attribute_id).first()
     if elem is None:
         raise ValueError("Нет такого product_attribute")
     elem.delete()

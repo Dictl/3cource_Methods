@@ -324,34 +324,52 @@ function loadProductCard(productId) {
         });
 }
 
-function paramValue(p) {
-    if (p.value_str !== null && p.value_str !== undefined) return escapeHtml(p.value_str);
-    if (p.value_int !== null && p.value_int !== undefined) return formatNumber(p.value_int);
-    if (p.value_real !== null && p.value_real !== undefined) return formatNumber(p.value_real);
+function isStaff() {
+    return document.body.classList.contains('staff');
+}
+
+// Не-администратору сервер изменения запрещает — не показываем ему кнопки
+function staffOnly(html) {
+    return isStaff() ? html : '';
+}
+
+function formatEnumValue(v) {
+    if (v.value_str !== null && v.value_str !== undefined && v.value_str !== '') return escapeHtml(v.value_str);
+    if (v.value_int !== null && v.value_int !== undefined) return formatNumber(v.value_int);
+    if (v.value_real !== null && v.value_real !== undefined) return formatNumber(v.value_real);
     return '—';
 }
 
-function enumValue(v) {
-    if (v.value_str) return escapeHtml(v.value_str);
-    if (v.value_int !== null) return formatNumber(v.value_int);
-    return formatNumber(v.value_real);
+function parameterInputHtml(param, current) {
+    var type = param.value_type;
+    if (type === 'enum') {
+        return '<select name="value">' + (param.enum_values || []).map(function (v) {
+            return '<option value="' + v.id + '"'
+                + (current !== null && String(current) === String(v.id) ? ' selected' : '') + '>'
+                + formatEnumValue(v) + '</option>';
+        }).join('') + '</select>';
+    }
+    if (type === 'int' || type === 'real') {
+        var step = type === 'int' ? '1' : '0.01';
+        var numberValue = current === null || current === undefined ? '' : current;
+        return '<input name="value" type="number" min="0" step="' + step + '" value="' + escapeHtml(numberValue) + '">';
+    }
+    return '<input name="value" value="' + escapeHtml(current === null || current === undefined ? '' : current) + '">';
+}
+
+function parameterCurrentValue(p) {
+    if (p.parameter_definition.value_type === 'enum') return p.value_enum_id;
+    if (p.value_str !== null && p.value_str !== undefined) return p.value_str;
+    if (p.value_int !== null && p.value_int !== undefined) return p.value_int;
+    if (p.value_real !== null && p.value_real !== undefined) return p.value_real;
+    return null;
 }
 
 function renderProductCard(product, extra, availableParameters, availableEnums, availableUnits) {
-    var canHaveBom = ['part', 'assembly', 'kit', 'complex'].indexOf(product.product_type) !== -1;
-    var usedParamIds = {};
-    (extra.parameters || []).forEach(function (p) {
-        usedParamIds[p.parameter_definition.id] = true;
-    });
+    var usedParameterIds = {};
+    (extra.parameters || []).forEach(function (p) { usedParameterIds[p.parameter_definition.id] = true; });
     var missingParameters = (availableParameters || []).filter(function (p) {
-        return !usedParamIds[p.id];
-    });
-    var usedEnumIds = {};
-    (extra.attributes || []).forEach(function (a) {
-        usedEnumIds[a.enum_definition.id] = true;
-    });
-    var missingEnums = (availableEnums || []).filter(function (e) {
-        return !usedEnumIds[e.id] && e.values && e.values.length;
+        return !usedParameterIds[p.id];
     });
 
     var html = '<h2>' + escapeHtml(product.name) + '</h2>'
@@ -378,6 +396,7 @@ function renderProductCard(product, extra, availableParameters, availableEnums, 
         + '<label>Вес, г <input name="weight_gram" type="number" min="0" value="' + product.weight_gram + '"></label>'
         + '<button type="submit">Сохранить изделие</button></form>';
 
+    var canHaveBom = ['part', 'assembly', 'kit', 'complex'].indexOf(product.product_type) !== -1;
     if (canHaveBom) {
         html += '<p><a href="#bom/' + product.id + '">Открыть спецификацию (состав) &rarr;</a></p>';
     } else {
@@ -385,139 +404,88 @@ function renderProductCard(product, extra, availableParameters, availableEnums, 
             + ' &mdash; у него нет своего состава, оно само входит в состав других изделий.</p>';
     }
 
-    html += '<h3>Параметры</h3>';
     if (missingParameters.length) {
-        var defaultParam = missingParameters[0];
-        var createFieldHtml = '';
-        if (defaultParam && defaultParam.value_type === 'enum' && defaultParam.enum_values && defaultParam.enum_values.length) {
-            createFieldHtml = '<select name="enum_value_id">' + defaultParam.enum_values.map(function (v) {
-                var enumValue = v.value_str !== null ? v.value_str : v.value_int !== null ? v.value_int : v.value_real;
-                return '<option value="' + v.id + '">' + escapeHtml(enumValue) + '</option>';
-            }).join('') + '</select>';
-        } else {
-            createFieldHtml = '<input type="text" name="value" placeholder="Значение" required>';
-        }
-
-        var parameterSelector = '<select name="parameter_definition_id" required>'
-            + missingParameters.map(function (p) {
-                var enumText = p.value_type === 'enum' && p.enum_values && p.enum_values.length
-                    ? ' (' + p.enum_values.length + ' знач.)'
-                    : ' (' + p.value_type + ')';
-                return '<option value="' + p.id + '" data-type="' + p.value_type + '" data-enum-values="' +
-                    escapeHtml(JSON.stringify(p.enum_values || [])) + '">' + escapeHtml(p.name) + escapeHtml(enumText) + '</option>';
-            }).join('')
-            + '</select>';
         html += '<form id="productParameterCreateForm" data-product-id="' + product.id + '" class="form-row">'
-            + parameterSelector
-            + '<span class="parameter-create-field">' + createFieldHtml + '</span>'
+            + '<select name="parameter_definition_id" required>'
+            + missingParameters.map(function (p) {
+                return '<option value="' + p.id + '" data-type="' + p.value_type + '" data-enum-values="'
+                    + escapeHtml(JSON.stringify(p.enum_values || [])) + '">' + escapeHtml(p.name) + '</option>';
+            }).join('')
+            + '</select>'
+            + '<span class="parameter-create-field">'
+            + parameterInputHtml(missingParameters[0], null)
+            + '</span>'
             + '<button type="submit">Добавить параметр</button>'
             + '</form>';
     }
-    html += '<form id="productNewParameterForm" data-product-id="' + product.id + '" class="form-row">'
-        + '<strong>Новый параметр:</strong>'
-        + '<input name="name" placeholder="Название параметра" required>'
-        + '<select name="value_type" required>'
-        + '<option value="str">Строка</option>'
-        + '<option value="int">Целое</option>'
-        + '<option value="real">Дробное</option>'
-        + '</select>'
-        + '<select name="unit_id" required>'
-        + (availableUnits || []).map(function (unit) {
-            return '<option value="' + unit.id + '">' + escapeHtml(unit.symbol + ' — ' + unit.name) + '</option>';
-        }).join('')
-        + '</select>'
-        + '<input name="value" type="text" placeholder="Значение" required>'
-        + '<button type="submit">Добавить параметр</button>'
-        + '</form>';
+
+    html += '<h3>Параметры</h3>';
     if ((extra.parameters || []).length) {
         html += '<div class="table-wrap"><table class="refs-table product-params-table"><thead><tr>'
             + '<th>Параметр</th><th>Значение</th><th>Ед. изм.</th><th class="action-cell">Действия</th>'
             + '</tr></thead><tbody>';
         (extra.parameters || []).forEach(function (p) {
-            var value = p.value_str !== null && p.value_str !== undefined ? p.value_str :
-                p.value_int !== null && p.value_int !== undefined ? p.value_int :
-                p.value_real !== null && p.value_real !== undefined ? p.value_real : '';
-            var valueInputHtml = '';
-            if (p.parameter_definition.value_type === 'enum' && p.parameter_definition.enum_values && p.parameter_definition.enum_values.length) {
-                valueInputHtml = '<select name="value" class="parameter-value-select">' + p.parameter_definition.enum_values.map(function (ev) {
-                    var evText = ev.value_str !== null && ev.value_str !== undefined ? ev.value_str :
-                        ev.value_int !== null && ev.value_int !== undefined ? ev.value_int : ev.value_real;
-                    return '<option value="' + ev.id + '"' + (String(p.value_enum_id) === String(ev.id) ? ' selected' : '') + '>'
-                        + escapeHtml(evText) + '</option>';
-                }).join('') + '</select>';
-            } else if (p.parameter_definition.value_type === 'int') {
-                valueInputHtml = '<input name="value" type="number" min="0" step="1" value="' + escapeHtml(value === null ? '' : value) + '">';
-            } else if (p.parameter_definition.value_type === 'real') {
-                valueInputHtml = '<input name="value" type="number" min="0" step="0.01" value="' + escapeHtml(value === null ? '' : value) + '">';
-            } else {
-                valueInputHtml = '<input name="value" value="' + escapeHtml(value === null ? '' : value) + '">';
-            }
-            html += '<tr class="parameter-edit" data-product-id="' + product.id + '" data-ppv-id="' + p.id + '" data-type="' + p.parameter_definition.value_type + '">'
+            html += '<tr class="parameter-edit" data-product-id="' + product.id + '" data-ppv-id="' + p.id
+                + '" data-type="' + p.parameter_definition.value_type + '">'
                 + '<td>' + escapeHtml(p.parameter_definition.name) + '</td>'
-                + '<td class="num">' + valueInputHtml + '</td>'
+                + '<td class="num">' + parameterInputHtml(p.parameter_definition, parameterCurrentValue(p)) + '</td>'
                 + '<td class="num">' + escapeHtml(p.parameter_definition.unit ? p.parameter_definition.unit.symbol || '' : '') + '</td>'
                 + '<td class="action-cell">'
-                + '<button type="button" class="save-parameter-btn">Сохранить</button>'
-                + '<button type="button" class="danger delete-parameter-btn" data-ppv-id="' + p.id + '">Удалить</button>'
+                + staffOnly('<button type="button" class="save-parameter-btn">Сохранить</button>'
+                    + '<button type="button" class="danger delete-parameter-btn" data-ppv-id="' + p.id + '">Удалить</button>')
                 + '</td></tr>';
         });
         html += '</tbody></table></div>';
+    } else {
+        html += '<p class="muted">Значения параметров не заданы</p>';
     }
 
+    // Характеристика — это значение перечисления из справочника, закреплённое за изделием.
     html += '<h3>Характеристики</h3>';
     if (extra.attributes && extra.attributes.length) {
         html += '<div class="table-wrap"><table class="refs-table product-params-table product-attributes-table"><thead><tr>'
-            + '<th>Перечисление</th><th>Значение</th><th class="action-cell">Действия</th>'
+            + '<th>Характеристика</th><th>Значение</th><th>Состав</th><th class="action-cell">Действия</th>'
             + '</tr></thead><tbody>';
         extra.attributes.forEach(function (a) {
-            var valueText = a.enum_value.value_str !== null && a.enum_value.value_str !== undefined
-                ? a.enum_value.value_str
-                : a.enum_value.value_int !== null && a.enum_value.value_int !== undefined
-                    ? a.enum_value.value_int
-                    : a.enum_value.value_real;
+            var composition = a.enum_value.value_real;
             html += '<tr class="attribute-edit" data-product-id="' + product.id + '" data-attribute-id="' + a.id + '">'
-                + '<td>' + escapeHtml(a.enum_definition.description) + '</td>'
-                + '<td class="num">' + escapeHtml(valueText) + '</td>'
+                + '<td>' + escapeHtml(a.enum_definition.description || '—') + '</td>'
+                + '<td>' + formatEnumValue(a.enum_value) + '</td>'
+                + '<td class="num">' + (composition === null || composition === undefined
+                    ? '—' : formatNumber(composition) + ' ' + escapeHtml(a.enum_definition.unit_symbol || '')) + '</td>'
                 + '<td class="action-cell">'
-                + '<button type="button" class="danger delete-attribute-btn">Удалить</button>'
+                + staffOnly('<button type="button" class="danger delete-attribute-btn" data-attribute-id="' + a.id + '">Удалить</button>')
                 + '</td></tr>';
         });
         html += '</tbody></table></div>';
     } else {
         html += '<p class="muted">Характеристики не заданы</p>';
     }
-    if (availableEnums && availableEnums.length) {
-        html += '<form id="productNewCharacteristicForm" data-product-id="' + product.id + '" class="form-row">'
-            + '<strong>Новая характеристика:</strong>'
+
+    if (!(availableEnums || []).length) {
+        html += '<p class="hint">Для класса изделия не задано ни одного перечисления &mdash; добавить характеристику нельзя. '
+            + 'Перечисления и их значения задаются во вкладке «Справочники».</p>';
+    } else {
+        html += '<form id="productCharacteristicForm" data-product-id="' + product.id + '" class="form-row">'
             + '<select name="enum_definition_id" required>'
             + availableEnums.map(function (e) {
-                return '<option value="' + e.id + '">' + escapeHtml(e.description) + '</option>';
-            }).join('')
-            + '</select>'
-            + '<input name="value_str" placeholder="Новое значение" required>'
-            + '<button type="submit">Добавить характеристику</button>'
-            + '</form>';
-    }
-    if (missingEnums.length) {
-        html += '<form id="productAttributeCreateForm" data-product-id="' + product.id + '" class="form-row">'
-            + '<select name="enum_definition_id" required>'
-            + missingEnums.map(function (e) {
                 return '<option value="' + e.id + '" data-values="' + escapeHtml(JSON.stringify(e.values || [])) + '">'
                     + escapeHtml(e.description) + '</option>';
             }).join('')
-            + '</select><select name="enum_value_id" required>'
-            + missingEnums[0].values.map(function (v) {
-                var text = v.value_str !== null && v.value_str !== undefined ? v.value_str :
-                    v.value_int !== null && v.value_int !== undefined ? v.value_int : v.value_real;
-                return '<option value="' + v.id + '">' + escapeHtml(text) + '</option>';
+            + '</select>'
+            + '<select name="enum_value_id" required>'
+            + (availableEnums[0].values || []).map(function (v) {
+                return '<option value="' + v.id + '">' + formatEnumValue(v) + '</option>';
             }).join('')
-            + '</select><button type="submit">Добавить характеристику</button></form>';
+            + '</select>'
+            + '<input name="new_value" placeholder="Своё значение (необязательно)">'
+            + '<button type="submit">Добавить характеристику</button>'
+            + '</form>';
     }
 
     productCard.innerHTML = html;
     productCard.scrollIntoView();
 }
-
 // ---------- Окна добавления / перемещения ----------
 
 function openModal(which) {
@@ -769,186 +737,131 @@ document.addEventListener('change', function (e) {
     if (e.target.name === 'parameter_definition_id' && e.target.closest('#productParameterCreateForm')) {
         var parameterForm = e.target.closest('#productParameterCreateForm');
         var parameterOption = e.target.options[e.target.selectedIndex];
-        var parameterType = parameterOption.getAttribute('data-type');
-        var enumValues = JSON.parse(parameterOption.getAttribute('data-enum-values') || '[]');
-        var field = parameterForm.querySelector('.parameter-create-field');
-        if (parameterType === 'enum') {
-            field.innerHTML = '<select name="enum_value_id" required>' + enumValues.map(function (v) {
-                var text = v.value_str !== null && v.value_str !== undefined ? v.value_str :
-                    v.value_int !== null && v.value_int !== undefined ? v.value_int : v.value_real;
-                return '<option value="' + v.id + '">' + escapeHtml(text) + '</option>';
-            }).join('') + '</select>';
-        } else {
-            var inputType = parameterType === 'int' || parameterType === 'real' ? 'number' : 'text';
-            var step = parameterType === 'int' ? ' step="1" min="0"' :
-                parameterType === 'real' ? ' step="0.01" min="0"' : '';
-            field.innerHTML = '<input type="' + inputType + '" name="value" placeholder="Значение" required' + step + '>';
-        }
+        parameterForm.querySelector('.parameter-create-field').innerHTML = parameterInputHtml({
+            value_type: parameterOption.getAttribute('data-type'),
+            enum_values: JSON.parse(parameterOption.getAttribute('data-enum-values') || '[]')
+        }, null);
         return;
     }
-    if (e.target.name !== 'enum_definition_id' || !e.target.closest('#productAttributeCreateForm')) return;
-    var form = e.target.closest('#productAttributeCreateForm');
-    var selected = e.target.options[e.target.selectedIndex];
-    var values = JSON.parse(selected.getAttribute('data-values') || '[]');
-    var valueSelect = form.querySelector('[name="enum_value_id"]');
-    valueSelect.innerHTML = values.map(function (v) {
-        var text = v.value_str !== null && v.value_str !== undefined ? v.value_str :
-            v.value_int !== null && v.value_int !== undefined ? v.value_int : v.value_real;
-        return '<option value="' + v.id + '">' + escapeHtml(text) + '</option>';
+    if (e.target.name !== 'enum_definition_id' || !e.target.closest('#productCharacteristicForm')) return;
+    var characteristicForm = e.target.closest('#productCharacteristicForm');
+    var values = JSON.parse(e.target.options[e.target.selectedIndex].getAttribute('data-values') || '[]');
+    characteristicForm.querySelector('[name="enum_value_id"]').innerHTML = values.map(function (v) {
+        return '<option value="' + v.id + '">' + formatEnumValue(v) + '</option>';
     }).join('');
 });
 
 document.addEventListener('click', function (e) {
     var saveButton = e.target.closest('.save-parameter-btn');
     if (saveButton) {
-        var row = saveButton.closest('.parameter-edit');
-        var valueInput = row.querySelector('input[name="value"], select[name="value"]');
-        var value = valueInput ? valueInput.value : '';
-        var type = row.getAttribute('data-type');
-        var payload = {
-            product_parameter_value_id: row.getAttribute('data-ppv-id'),
-        };
-
-        if (type === 'int') {
-            payload.value_int = parseInt(value, 10);
-        } else if (type === 'real') {
-            payload.value_real = parseFloat(value);
-        } else if (type === 'enum') {
-            payload.value_enum_id = parseInt(value, 10);
-        } else {
-            payload.value_str = value;
-        }
-
-        apiRequest('/api/product-parameters/update/', 'PUT', payload).then(function () {
-            showMessage('Параметр сохранен', 'success');
-            var productId = parseInt(row.getAttribute('data-product-id'), 10);
-            if (!isNaN(productId)) loadProductCard(productId);
-        }).catch(function (err) { showMessage(err.message, 'error'); });
+        createOrUpdateParameterValue(saveButton.closest('.parameter-edit'), 'PUT', false);
         return;
     }
 
-    var deleteButton = e.target.closest('.delete-parameter-btn');
-    if (deleteButton) {
-        var ppvId = parseInt(deleteButton.getAttribute('data-ppv-id'), 10);
+    var deleteParameterButton = e.target.closest('.delete-parameter-btn');
+    if (deleteParameterButton) {
+        var parameterRow = deleteParameterButton.closest('.parameter-edit');
         if (!confirm('Удалить параметр?')) return;
-        apiRequest('/api/product-parameters/' + ppvId + '/delete/', 'DELETE').then(function () {
-            showMessage('Параметр удалён', 'success');
-            var row = deleteButton.closest('.parameter-edit');
-            var productId = parseInt(row.getAttribute('data-product-id'), 10);
-            if (!isNaN(productId)) loadProductCard(productId);
-        }).catch(function (err) { showMessage(err.message, 'error'); });
+        apiRequest('/api/product-parameters/' + parseInt(deleteParameterButton.getAttribute('data-ppv-id'), 10) + '/delete/', 'DELETE')
+            .then(function () {
+                showMessage('Параметр удалён', 'delete');
+                loadProductCard(parseInt(parameterRow.getAttribute('data-product-id'), 10));
+            })
+            .catch(function (err) { showMessage(err.message, 'error'); });
+        return;
     }
 
     var deleteAttributeButton = e.target.closest('.delete-attribute-btn');
-    if (deleteAttributeButton) {
-        var attributeRow = deleteAttributeButton.closest('.attribute-edit');
-        if (!confirm('Удалить характеристику?')) return;
-        apiRequest('/api/product-attributes/delete', 'DELETE', {
-            product_id: attributeRow.getAttribute('data-attribute-id')
-        }).then(function () {
+    if (!deleteAttributeButton) return;
+    var attributeRow = deleteAttributeButton.closest('.attribute-edit');
+    if (!confirm('Удалить характеристику?')) return;
+    apiRequest('/api/product-attributes/delete', 'DELETE', {
+        product_attribute_value_id: parseInt(deleteAttributeButton.getAttribute('data-attribute-id'), 10)
+    })
+        .then(function () {
             showMessage('Характеристика удалена', 'delete');
             loadProductCard(parseInt(attributeRow.getAttribute('data-product-id'), 10));
-        }).catch(function (err) { showMessage(err.message, 'error'); });
+        })
+        .catch(function (err) { showMessage(err.message, 'error'); });
+});
+document.addEventListener('submit', function (e) {
+    if (e.target.id === 'productParameterCreateForm') {
+        e.preventDefault();
+        createOrUpdateParameterValue(e.target, 'POST');
+        return;
+    }
+    if (e.target.id === 'productCharacteristicForm') {
+        e.preventDefault();
+        createCharacteristic(e.target);
+        return;
     }
 });
 
-document.addEventListener('submit', function (e) {
-    if (e.target.id !== 'productNewParameterForm') return;
-    e.preventDefault();
-    var form = e.target;
+// Строка таблицы параметров и форма добавления устроены одинаково,
+// это позволяет сохранять и новые, и уже заданные значения одной функцией.
+function createOrUpdateParameterValue(source, method) {
+    var isNew = method === 'POST';
+    var field = source.querySelector('[name="value"]');
+    var value = field ? field.value : '';
+    if (isNew && value === '') {
+        showMessage('Введите значение параметра', 'error');
+        return;
+    }
+
+    var productId = parseInt(source.getAttribute('data-product-id'), 10);
+    var payload = { product_id: productId };
+    var type = source.getAttribute('data-type');
+
+    if (isNew) {
+        var select = source.querySelector('select[name="parameter_definition_id"]');
+        payload.parameter_definition_id = parseInt(select.value, 10);
+        type = select.options[select.selectedIndex].getAttribute('data-type');
+    } else {
+        payload.product_parameter_value_id = parseInt(source.getAttribute('data-ppv-id'), 10);
+    }
+
+    if (type === 'int') {
+        payload.value_int = parseInt(value, 10);
+    } else if (type === 'real') {
+        payload.value_real = parseFloat(value);
+    } else if (type === 'enum') {
+        payload.value_enum_id = parseInt(value, 10);
+    } else {
+        payload.value_str = value;
+    }
+
+    var url = isNew ? '/api/product-parameters/create/' : '/api/product-parameters/update/';
+    apiRequest(url, method, payload)
+        .then(function () {
+            showMessage(isNew ? 'Параметр добавлен' : 'Параметр сохранён', 'success');
+            loadProductCard(productId);
+        })
+        .catch(function (err) { showMessage(err.message, 'error'); });
+}
+
+// Характеристика — значение перечисления из справочника либо новое значение для него
+function createCharacteristic(form) {
     var productId = parseInt(form.getAttribute('data-product-id'), 10);
-    var type = form.querySelector('[name="value_type"]').value;
-    var value = form.querySelector('[name="value"]').value.trim();
-    var parameterPayload = {
-        classifier_node_id: getNodeById(productId) ? getNodeById(productId).id : null,
-        name: form.querySelector('[name="name"]').value.trim(),
-        value_type: type,
-        unit_id: form.querySelector('[name="unit_id"]').value
-    };
+    var newValue = form.querySelector('[name="new_value"]').value.trim();
+    var valuePromise = newValue
+        ? apiRequest('/api/enum-values/add/', 'POST', {
+            enum_definition_id: parseInt(form.querySelector('[name="enum_definition_id"]').value, 10),
+            value_str: newValue
+        })
+        : Promise.resolve({ id: parseInt(form.querySelector('[name="enum_value_id"]').value, 10) });
 
-    apiRequest('/api/parameters/create/', 'POST', parameterPayload).then(function (parameter) {
-        var valuePayload = {
-            product_id: productId,
-            parameter_definition_id: parameter.id
-        };
-        if (type === 'int') {
-            valuePayload.value_int = parseInt(value, 10);
-        } else if (type === 'real') {
-            valuePayload.value_real = parseFloat(value);
-        } else {
-            valuePayload.value_str = value;
-        }
-        return apiRequest('/api/product-parameters/create/', 'POST', valuePayload);
-    }).then(function () {
-        showMessage('Новый параметр добавлен', 'success');
-        loadProductCard(productId);
-    }).catch(function (err) { showMessage(err.message, 'error'); });
-});
-
-document.addEventListener('submit', function (e) {
-    if (e.target.id !== 'productNewCharacteristicForm') return;
-    e.preventDefault();
-    var form = e.target;
-    var productId = parseInt(form.getAttribute('data-product-id'), 10);
-    var enumDefinitionId = parseInt(form.querySelector('[name="enum_definition_id"]').value, 10);
-    var value = form.querySelector('[name="value_str"]').value.trim();
-
-    apiRequest('/api/enum-values/add/', 'POST', {
-        enum_definition_id: enumDefinitionId,
-        value_str: value
-    }).then(function (enumValue) {
+    valuePromise.then(function (enumValue) {
         return apiRequest('/api/product-attributes/assign/', 'POST', {
             product_id: productId,
             enum_value_id: enumValue.id
         });
-    }).then(function () {
-        showMessage('Новая характеристика добавлена', 'success');
-        loadProductCard(productId);
-    }).catch(function (err) { showMessage(err.message, 'error'); });
-});
-
-document.addEventListener('submit', function (e) {
-    if (e.target.id !== 'productAttributeCreateForm') return;
-    e.preventDefault();
-    var form = e.target;
-    apiRequest('/api/product-attributes/assign/', 'POST', {
-        product_id: form.getAttribute('data-product-id'),
-        enum_value_id: form.querySelector('[name="enum_value_id"]').value
-    }).then(function () {
-        showMessage('Характеристика добавлена', 'success');
-        loadProductCard(parseInt(form.getAttribute('data-product-id'), 10));
-    }).catch(function (err) { showMessage(err.message, 'error'); });
-});
-
-document.addEventListener('submit', function (e) {
-    if (e.target.id !== 'productParameterCreateForm') return;
-    e.preventDefault();
-    var form = e.target;
-    var productId = parseInt(form.getAttribute('data-product-id'), 10);
-    var select = form.querySelector('select[name="parameter_definition_id"]');
-    var paramId = parseInt(select.value, 10);
-    var type = (select.options[select.selectedIndex] || {}).getAttribute('data-type') || 'str';
-    var payload = {
-        product_id: productId,
-        parameter_definition_id: paramId,
-    };
-
-    if (type === 'int') {
-        payload.value_int = parseInt(form.querySelector('input[name="value"]').value, 10);
-    } else if (type === 'real') {
-        payload.value_real = parseFloat(form.querySelector('input[name="value"]').value);
-    } else if (type === 'enum') {
-        payload.value_enum_id = parseInt(form.querySelector('select[name="enum_value_id"]').value, 10);
-    } else {
-        payload.value_str = form.querySelector('input[name="value"]').value;
-    }
-
-    apiRequest('/api/product-parameters/create/', 'POST', payload).then(function () {
-        showMessage('Параметр добавлен', 'success');
-        loadProductCard(productId);
-    }).catch(function (err) { showMessage(err.message, 'error'); });
-});
-
+    })
+        .then(function () {
+            showMessage('Характеристика добавлена', 'success');
+            loadProductCard(productId);
+        })
+        .catch(function (err) { showMessage(err.message, 'error'); });
+}
 document.getElementById('openModalBtn').onclick = function () { openModal(modal); };
 document.getElementById('openMoveModalBtn').onclick = function () {
     openModal(moveModal);
