@@ -143,15 +143,18 @@ function loadBomTree() {
                 + '</tr></thead><tbody>';
 
             rows.forEach(function (r) {
-                var unitSelect = '<select name="unit_id">' + unitOptions.replace('value="' + r.unit_id + '"', 'value="' + r.unit_id + '" selected') + '</select>';
+                // поля ввода стоят в своих ячейках, но принадлежат форме строки через атрибут form
+                var formId = 'bom-form-' + r.id;
+                var unitSelect = '<select name="unit_id" form="' + formId + '">'
+                    + unitOptions.replace('value="' + r.unit_id + '"', 'value="' + r.unit_id + '" selected') + '</select>';
                 html += '<tr>'
                     + '<td>' + escapeHtml(r.component_name || '—') + (r.is_base ? ' <span class="badge">из базы</span>' : '') + '</td>'
                     + '<td>' + escapeHtml(r.component_designation || '—') + '</td>'
                     + '<td>' + productTypeName(r.product_type_code) + '</td>'
-                    + '<td><input type="number" name="quantity" min="0.001" step="any" value="' + Number(r.quantity || 0) + '"></td>'
-                    + '<td><input type="number" name="per_quantity" min="0.001" step="any" value="' + Number(r.per_quantity || 1) + '"></td>'
+                    + '<td><input type="number" name="quantity" form="' + formId + '" min="0.001" step="any" value="' + Number(r.quantity || 0) + '"></td>'
+                    + '<td><input type="number" name="per_quantity" form="' + formId + '" min="0.001" step="any" value="' + Number(r.per_quantity || 1) + '"></td>'
                     + '<td>' + unitSelect + '</td>'
-                    + '<td><form class="bom-item-form" data-bom-item-id="' + r.id + '"><button type="submit" class="small">Сохранить</button>'
+                    + '<td><form id="' + formId + '" class="bom-item-form" data-bom-item-id="' + r.id + '"><button type="submit" class="small">Сохранить</button>'
                     + '<button type="button" class="small danger bom-delete-btn" data-bom-item-id="' + r.id + '">Удалить</button></form></td>'
                     + '</tr>';
             });
@@ -231,6 +234,8 @@ function loadBomCalc() {
 
 function loadBomChanges() {
     var box = document.getElementById('bomChanges');
+    var logBox = document.getElementById('bomChangeLog');
+    if (logBox) logBox.innerHTML = '<p class="muted">Загрузка...</p>';
 
     apiRequest('/api/bom/' + bomProductId + '/changes/')
         .then(function (rows) {
@@ -244,6 +249,61 @@ function loadBomChanges() {
         .catch(function (err) {
             box.innerHTML = '<p class="muted">' + escapeHtml(err.message) + '</p>';
         });
+
+    if (!logBox) return;
+
+    apiRequest('/api/bom/' + bomProductId + '/change-log/')
+        .then(function (rows) {
+            logBox.innerHTML = renderTable([
+                { title: 'Изменение', num: true, render: function (r) { return r.change_no || '—'; } },
+                { title: 'Компонент', render: function (r) { return escapeHtml(r.component_name || ('id=' + r.component_id)); } },
+                { title: 'Операция', render: function (r) { return bomOperationName(r.operation); } },
+                { title: 'Норма', num: true, render: function (r) { return bomLogValue(r, 'quantity', ''); } },
+                { title: 'Норма на 1', num: true, render: function (r) { return bomLogValue(r, 'per_quantity', ''); } },
+                { title: 'Ед. изм.', render: function (r) { return bomLogValue(r, 'unit', 'symbol'); } },
+                { title: 'Из базы', render: function (r) { return bomLogBool(r.old_is_base, r.new_is_base); } },
+                { title: 'Автор', render: function (r) { return escapeHtml(r.changed_by || '—'); } },
+                { title: 'Когда', render: function (r) { return r.changed_at ? new Date(r.changed_at).toLocaleString('ru-RU') : '—'; } }
+            ], rows, 'Правок состава пока не было');
+        })
+        .catch(function (err) {
+            logBox.innerHTML = '<p class="muted">' + escapeHtml(err.message) + '</p>';
+        });
+}
+
+var BOM_OPERATIONS = { add: 'добавление', update: 'изменение', remove: 'удаление' };
+
+function bomOperationName(operation) {
+    return BOM_OPERATIONS[operation] || escapeHtml(operation || '');
+}
+
+// Старое -> новое значение поля журнала
+function bomLogChange(oldValue, newValue, format) {
+    var fmt = format || function (v) { return escapeHtml(String(v)); };
+    if (oldValue === null || oldValue === undefined) {
+        return newValue === null || newValue === undefined ? '—' : fmt(newValue);
+    }
+    var before = fmt(oldValue);
+    if (newValue === null || newValue === undefined || newValue === oldValue) return before;
+    return before + ' → ' + fmt(newValue);
+}
+
+function bomLogValue(row, field, suffix) {
+    var numeric = field !== 'unit';
+    var format = function (v) {
+        return numeric
+            ? formatNumber(v) + (suffix ? ' ' + escapeHtml(suffix) : '')
+            : escapeHtml(String(v));
+    };
+    if (field === 'unit') {
+        return bomLogChange(row.old_unit_symbol, row.new_unit_symbol);
+    }
+    return bomLogChange(row['old_' + field], row['new_' + field], format);
+}
+
+function bomLogBool(oldValue, newValue) {
+    var fmt = function (v) { return v ? 'да' : 'нет'; };
+    return bomLogChange(oldValue, newValue, fmt);
 }
 
 // ---------- Обработчики ----------
@@ -266,8 +326,7 @@ document.getElementById('bomAddItemForm').addEventListener('submit', function (e
         component_id: bomComponentSelect.value,
         quantity: bomItemQuantity.value,
         per_quantity: bomItemPerQuantity.value,
-        unit_id: bomItemUnitSelect.value,
-        position_no: 0
+        unit_id: bomItemUnitSelect.value
     })
         .then(function () {
             e.target.reset();
@@ -289,9 +348,9 @@ document.addEventListener('submit', function (e) {
     var id = parseInt(form.getAttribute('data-bom-item-id'), 10);
     var payload = {
         bom_item_id: id,
-        quantity: form.querySelector('input[name="quantity"]').value,
-        per_quantity: form.querySelector('input[name="per_quantity"]').value,
-        unit_id: form.querySelector('select[name="unit_id"]').value
+        quantity: form.elements['quantity'].value,
+        per_quantity: form.elements['per_quantity'].value,
+        unit_id: form.elements['unit_id'].value
     };
     apiRequest('/api/bom/items/update/', 'PUT', payload)
         .then(function () {

@@ -8,7 +8,7 @@ from core.models import (
     ParameterDefinition, ProductParameterValue, ParameterNumericConstraint,
     Unit, UnitDimension
 )
-from django.db import connection
+from django.db import connection, DatabaseError
 from django.views.decorators.csrf import csrf_exempt
 
 from .service import (
@@ -64,11 +64,18 @@ from .service import (
     create_modification,
     register_change,
     get_bom_changes,
+    get_bom_change_log,
 )
 
 
 def _json_error(message, status=400):
     return JsonResponse({"ok": False, "error": message}, status=status)
+
+
+"Текст ошибки БД: сначала сообщение RAISE EXCEPTION, потом общий текст исключения"
+def _db_message(e):
+    diag = getattr(e.__cause__, "diag", None)
+    return diag.message_primary if diag and diag.message_primary else str(e)
 
 
 def _parse_json(request):
@@ -317,7 +324,9 @@ def api_add_product(request):
 def api_update_product(request):
     try:
         payload = _parse_json(request)
-        product = get_object_or_404(Product, id=int(payload.get("product_id")))
+        product = Product.objects.filter(id=int(payload.get("product_id"))).first()
+        if product is None:
+            return _json_error("Изделие не найдено", 404)
         for field in ("name", "sku", "supplier", "designation"):
             if field in payload:
                 value = payload[field]
@@ -331,6 +340,8 @@ def api_update_product(request):
             product.unit_id = payload["unit_id"] or None
         product.save()
         return JsonResponse({"ok": True, "data": _serialize_product(product)})
+    except DatabaseError as e:
+        return _json_error(_db_message(e))
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
@@ -1351,19 +1362,21 @@ def _serialize_bom_change(change):
 
 
 def _serialize_bom_item(item):
+    component = Product.objects.filter(id=item.component_id).first()
+    unit = Unit.objects.filter(id=item.unit_id).first()
     return {
         "id": item.id,
         "parent_product_id": item.parent_product_id,
         "component_id": item.component_id,
-        "component_name": item.component.name if item.component else None,
-        "component_designation": item.component.designation if item.component else None,
-        "product_type_code": item.component.product_type_id if item.component else None,
+        "component_name": component.name if component else None,
+        "component_designation": component.designation if component else None,
+        "product_type_code": component.product_type_id if component else None,
         "position_no": item.position_no,
         "quantity": float(item.quantity) if item.quantity is not None else None,
         "per_quantity": float(item.per_quantity) if item.per_quantity is not None else None,
         "unit_id": item.unit_id,
-        "unit_symbol": item.unit.symbol if item.unit else None,
-        "is_base": item.is_base,
+        "unit_symbol": unit.symbol if unit else None,
+        "is_base": bool(item.is_base),
     }
 
 "Список строк состава изделия для редактора"
@@ -1375,7 +1388,7 @@ def api_bom_items(request, product_id):
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
-"Добавить строку состава изделия"
+"Добавить строку состава изделия. Изменение регистрируется сервисом в той же транзакции"
 @csrf_exempt
 @require_http_methods(["POST"])
 def api_create_bom_item(request):
@@ -1387,15 +1400,16 @@ def api_create_bom_item(request):
             quantity=payload.get("quantity"),
             per_quantity=payload.get("per_quantity", 1),
             unit_id=payload.get("unit_id"),
-            position_no=payload.get("position_no", 0),
+            position_no=payload.get("position_no"),
             is_base=payload.get("is_base", False),
+            author=request.user.get_username(),
+            change_description=payload.get("change_description"),
         )
-        register_change(row.parent_product_id, f"Добавлен компонент '{row.component.name}' в состав изделия")
         return JsonResponse({"ok": True, "data": _serialize_bom_item(row)})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
-"Редактировать строку состава изделия"
+"Редактировать строку состава изделия. Изменение регистрируется сервисом в той же транзакции"
 @csrf_exempt
 @require_http_methods(["PUT"])
 def api_update_bom_item(request):
@@ -1408,24 +1422,26 @@ def api_update_bom_item(request):
             unit_id=payload.get("unit_id"),
             position_no=payload.get("position_no"),
             is_base=payload.get("is_base"),
+            author=request.user.get_username(),
+            change_description=payload.get("change_description"),
         )
-        register_change(row.parent_product_id, f"Обновлена норма компонента '{row.component.name}'")
         return JsonResponse({"ok": True, "data": _serialize_bom_item(row)})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
-"Удалить строку состава изделия"
+"Удалить строку состава изделия. Изменение регистрируется сервисом в той же транзакции"
 @csrf_exempt
 @require_http_methods(["DELETE"])
 def api_delete_bom_item(request, bom_item_id):
     try:
-        from core.models import BomItem
-        item = BomItem.objects.select_related('component').get(id=int(bom_item_id))
-        parent_id = item.parent_product_id
-        delete_bom_item(bom_item_id)
-        register_change(parent_id, f"Удалён компонент '{item.component.name}' из состава изделия")
+        payload = _parse_json(request) if request.body else {}
+        delete_bom_item(
+            bom_item_id,
+            author=request.user.get_username(),
+            change_description=payload.get("change_description"),
+        )
         return JsonResponse({"ok": True})
-    except (BomItem.DoesNotExist, TypeError, ValueError) as e:
+    except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
 "Дерево состава изделия на всю глубину (find_bom)"
@@ -1477,7 +1493,11 @@ def api_create_modification(request):
 def api_register_change(request):
     try:
         payload = _parse_json(request)
-        change = register_change(payload.get("product_id"), payload.get("description"))
+        change = register_change(
+            payload.get("product_id"),
+            payload.get("description"),
+            author=request.user.get_username(),
+        )
         return JsonResponse({"ok": True, "data": _serialize_bom_change(change)})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
@@ -1488,5 +1508,14 @@ def api_bom_changes(request, product_id):
     try:
         changes = get_bom_changes(product_id)
         return JsonResponse({"ok": True, "data": [_serialize_bom_change(c) for c in changes]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Журнал правок состава изделия, сначала свежие"
+@require_http_methods(["GET"])
+def api_bom_change_log(request, product_id):
+    try:
+        rows = get_bom_change_log(product_id)
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))

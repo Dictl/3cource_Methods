@@ -10,6 +10,11 @@ from django.db import connection
 from django.db.migrations.recorder import MigrationRecorder
 
 SCHEMA_FILE = settings.BASE_DIR / 'schema.sql'
+# Инкрементальные изменения схемы: патч применяется, если версия в базе ниже SCHEMA_VERSION
+SCHEMA_PATCHES = {
+    2: settings.BASE_DIR / 'schema_patch_v2.sql',
+}
+SCHEMA_VERSION = max(SCHEMA_PATCHES)
 # Таблица из самой свежей части схемы: если её нет — схема не загружена или устарела
 SCHEMA_MARKER_TABLE = 'bom_item'
 
@@ -40,14 +45,34 @@ def ensure_database():
         conn.close()
 
 
+def _schema_version(cur):
+    cur.execute('SELECT to_regclass(%s)', ['public.schema_version'])
+    if cur.fetchone()[0] is None:
+        return 0
+    cur.execute('SELECT COALESCE(MAX(version), 0) FROM schema_version')
+    return cur.fetchone()[0]
+
+
 def ensure_schema():
     with connection.cursor() as cur:
         cur.execute('SELECT to_regclass(%s)', [f'public.{SCHEMA_MARKER_TABLE}'])
-        if cur.fetchone()[0] is not None:
+        if cur.fetchone()[0] is None:
+            _log(f'Схема не найдена — загружаю {SCHEMA_FILE.name}')
+            cur.execute(SCHEMA_FILE.read_text(encoding='utf-8'))
+            _log('Схема загружена')
             return
-        _log(f'Схема не найдена — загружаю {SCHEMA_FILE.name}')
-        cur.execute(SCHEMA_FILE.read_text(encoding='utf-8'))
-    _log('Схема загружена')
+
+        version = _schema_version(cur)
+        if version >= SCHEMA_VERSION:
+            return
+
+        for target in sorted(SCHEMA_PATCHES):
+            if version < target:
+                patch_file = SCHEMA_PATCHES[target]
+                _log(f'Версия схемы {version} < {target} — применяю {patch_file.name}')
+                cur.execute(patch_file.read_text(encoding='utf-8'))
+                version = target
+        _log(f'Схема обновлена до версии {version}')
 
 
 def ensure_migrations():

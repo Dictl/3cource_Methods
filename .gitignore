@@ -15,7 +15,6 @@ pyrightconfig.json
 *.pyd
 db.sqlite3
 media/
-migrations/
 
 # Virtual Environment
 venv/

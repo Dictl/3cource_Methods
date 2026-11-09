@@ -12,7 +12,7 @@ from core.models import (
     BomChange,
     BomItem,
 )
-from django.db import connection, DatabaseError
+from django.db import connection, transaction, DatabaseError
 from django.db.models import Q
 from typing import Optional
 
@@ -237,20 +237,33 @@ def search_delete_category(delete_id):
     for node_id in ordered:
         ClassifierNode.objects.filter(id=node_id).delete()
 
-"Удаляет продукт и связанные с ним значения параметров(product_parameter_value)"
+"Удаляет продукт. Нельзя удалить изделие, которое входит в чей-то состав или служит базовым для модификаций"
 def search_delete_product(delete_id):
     delete_id = int(delete_id)
 
-    ProductParameterValue.objects.filter(product_id=delete_id).delete()
+    try:
+        with transaction.atomic():
+            product = Product.objects.filter(id=delete_id).first()
+            if product is None:
+                raise ValueError(f"Товар с id '{delete_id}' не найден")
 
-    for element in base_product_output():
-        if element.id == delete_id:
-            element.delete()
-            return
+            if BomItem.objects.filter(component_id=delete_id).exists():
+                parents = list(
+                    Product.objects.filter(bom_items__component_id=delete_id)
+                    .order_by('id')
+                    .values_list('name', flat=True)
+                )
+                raise ValueError(
+                    "Нельзя удалить товар: он входит в состав изделий «"
+                    + "», «".join(parents) + "»"
+                )
 
-    raise ValueError(f"Товар с id '{delete_id}' не найден")
+            if Product.objects.filter(base_product_id=delete_id).exists():
+                raise ValueError("Нельзя удалить товар: он является базовым изделием для модификаций")
 
-    raise ValueError(f"Товар с id '{delete_id}' не найден")
+            product.delete()
+    except DatabaseError as e:
+        raise ValueError(_db_message(e)) from e
 
 "Перемещение к другой вершине (смена родителя)"
 def move_category(category_id, new_parent_id):
@@ -1084,8 +1097,12 @@ def _call_db_function(sql, params):
             columns = [col[0] for col in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
     except DatabaseError as e:
-        diag = getattr(e.__cause__, "diag", None)
-        raise ValueError(diag.message_primary if diag else str(e))
+        raise ValueError(_db_message(e)) from e
+
+"Текст ошибки БД: сначала сообщение RAISE EXCEPTION, потом общий текст исключения"
+def _db_message(e):
+    diag = getattr(e.__cause__, "diag", None)
+    return diag.message_primary if diag and diag.message_primary else str(e)
 
 "Проверка, что изделие существует"
 def _check_product_exists(product_id):
@@ -1110,14 +1127,34 @@ def _check_quantity(quantity):
 "Список строк состава изделия для редактирования и отображения"
 def list_bom_items(product_id):
     product_id = _check_product_exists(product_id)
-    return list(
-        BomItem.objects.filter(parent_product_id=product_id)
-        .select_related("component", "unit")
-        .order_by("position_no", "id")
-    )
+    sql = """
+        SELECT e.bom_item_id        AS id,
+               e.component_id,
+               e.position_no,
+               e.quantity,
+               e.per_quantity,
+               e.unit_id,
+               e.is_base,
+               c.name              AS component_name,
+               c.designation       AS component_designation,
+               c.product_type_code AS product_type_code,
+               u.symbol            AS unit_symbol
+        FROM bom_effective(%s) e
+        JOIN bom_item b  ON b.id = e.bom_item_id
+        JOIN product c   ON c.id = e.component_id
+        JOIN unit u      ON u.id = e.unit_id
+        ORDER BY e.position_no, b.id
+    """
+    return _call_db_function(sql, [product_id])
 
-"Создать строку состава изделия"
-def create_bom_item(parent_product_id, component_id, quantity, per_quantity, unit_id, position_no=0, is_base=False):
+"Следующий номер позиции в составе изделия"
+def _next_position_no(parent_product_id):
+    last = BomItem.objects.filter(parent_product_id=parent_product_id).order_by('-position_no').first()
+    return (last.position_no + 1) if last else 1
+
+"Создать строку состава изделия. Изменение спецификации регистрируется в той же транзакции"
+def create_bom_item(parent_product_id, component_id, quantity, per_quantity, unit_id, position_no=None,
+                    is_base=False, author=None, change_description=None):
     parent_product_id = _check_product_exists(parent_product_id)
     component_id = _check_product_exists(component_id)
 
@@ -1139,20 +1176,34 @@ def create_bom_item(parent_product_id, component_id, quantity, per_quantity, uni
     if BomItem.objects.filter(parent_product_id=parent_product_id, component_id=component_id).exists():
         raise ValueError("Компонент уже добавлен в состав изделия")
 
-    item = BomItem(
-        parent_product_id=parent_product_id,
-        component_id=component_id,
-        quantity=quantity,
-        per_quantity=per_quantity,
-        unit_id=int(unit_id),
-        position_no=int(position_no),
-        is_base=is_base,
-    )
-    item.save()
+    position_no = _next_position_no(parent_product_id) if position_no is None else int(position_no)
+
+    component = Product.objects.get(id=component_id)
+    try:
+        with transaction.atomic():
+            _call_db_function(
+                "SELECT register_change(%s, %s, %s) AS id",
+                [parent_product_id,
+                 change_description or f"Добавлен компонент '{component.name}' в состав изделия",
+                 author],
+            )
+            item = BomItem(
+                parent_product_id=parent_product_id,
+                component_id=component_id,
+                quantity=quantity,
+                per_quantity=per_quantity,
+                unit_id=int(unit_id),
+                position_no=position_no,
+                is_base=is_base,
+            )
+            item.save()
+    except DatabaseError as e:
+        raise ValueError(_db_message(e)) from e
     return item
 
-"Редактировать строку состава изделия"
-def update_bom_item(bom_item_id, quantity=None, per_quantity=None, unit_id=None, position_no=None, is_base=None):
+"Редактировать строку состава изделия. Изменение спецификации регистрируется в той же транзакции"
+def update_bom_item(bom_item_id, quantity=None, per_quantity=None, unit_id=None, position_no=None, is_base=None,
+                    author=None, change_description=None):
     try:
         bom_item = BomItem.objects.get(id=int(bom_item_id))
     except BomItem.DoesNotExist as exc:
@@ -1185,16 +1236,39 @@ def update_bom_item(bom_item_id, quantity=None, per_quantity=None, unit_id=None,
     if is_base is not None:
         bom_item.is_base = bool(is_base)
 
-    bom_item.save()
+    try:
+        with transaction.atomic():
+            _call_db_function(
+                "SELECT register_change(%s, %s, %s) AS id",
+                [bom_item.parent_product_id,
+                 change_description or f"Обновлена норма компонента '{bom_item.component.name}'",
+                 author],
+            )
+            bom_item.save()
+    except DatabaseError as e:
+        raise ValueError(_db_message(e)) from e
     return bom_item
 
-"Удалить строку состава изделия"
-def delete_bom_item(bom_item_id):
+"Удалить строку состава изделия. Изменение спецификации регистрируется в той же транзакции"
+def delete_bom_item(bom_item_id, author=None, change_description=None):
     try:
         bom_item = BomItem.objects.get(id=int(bom_item_id))
     except BomItem.DoesNotExist as exc:
         raise ValueError("Строка состава не найдена") from exc
-    bom_item.delete()
+
+    parent_product_id = bom_item.parent_product_id
+    component_name = bom_item.component.name
+    try:
+        with transaction.atomic():
+            _call_db_function(
+                "SELECT register_change(%s, %s, %s) AS id",
+                [parent_product_id,
+                 change_description or f"Удалён компонент '{component_name}' из состава изделия",
+                 author],
+            )
+            bom_item.delete()
+    except DatabaseError as e:
+        raise ValueError(_db_message(e)) from e
 
 "Дерево состава изделия на всю глубину (find_bom)"
 def find_bom(product_id):
@@ -1243,17 +1317,49 @@ def create_modification(base_product_id, name, designation=None):
     return Product.objects.get(id=rows[0]["id"])
 
 "Регистрация изменения спецификации изделия"
-def register_change(product_id, description):
+def register_change(product_id, description, author=None):
     product_id = _check_product_exists(product_id)
 
     description = (description or "").strip()
     if not description:
         raise ValueError("Описание изменения обязательно")
 
-    rows = _call_db_function("SELECT register_change(%s, %s) AS id", [product_id, description])
+    rows = _call_db_function("SELECT register_change(%s, %s, %s) AS id", [product_id, description, author])
     return BomChange.objects.get(id=rows[0]["id"])
 
 "История изменений спецификации изделия"
 def get_bom_changes(product_id):
     product_id = _check_product_exists(product_id)
     return list(BomChange.objects.filter(product_id=product_id).order_by("change_no"))
+
+"Журнал правок состава изделия: кто, что и когда менял, сначала свежие"
+def get_bom_change_log(product_id):
+    product_id = _check_product_exists(product_id)
+    sql = """
+        SELECT l.id,
+               l.change_id,
+               ch.change_no,
+               l.component_id,
+               c.name      AS component_name,
+               l.operation,
+               l.old_quantity,
+               l.new_quantity,
+               l.old_per_quantity,
+               l.new_per_quantity,
+               l.old_unit_id,
+               ou.symbol   AS old_unit_symbol,
+               l.new_unit_id,
+               nu.symbol   AS new_unit_symbol,
+               l.old_is_base,
+               l.new_is_base,
+               l.changed_by,
+               l.changed_at
+        FROM bom_change_log l
+        LEFT JOIN bom_change ch ON ch.id = l.change_id
+        LEFT JOIN product c     ON c.id = l.component_id
+        LEFT JOIN unit ou       ON ou.id = l.old_unit_id
+        LEFT JOIN unit nu       ON nu.id = l.new_unit_id
+        WHERE l.parent_product_id = %s
+        ORDER BY l.changed_at DESC, l.id DESC
+    """
+    return _call_db_function(sql, [product_id])
