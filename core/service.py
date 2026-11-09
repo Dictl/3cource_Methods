@@ -1129,6 +1129,7 @@ def list_bom_items(product_id):
     product_id = _check_product_exists(product_id)
     sql = """
         SELECT e.bom_item_id        AS id,
+               b.parent_product_id,
                e.component_id,
                e.position_no,
                e.quantity,
@@ -1295,6 +1296,19 @@ def calc_bom_by_class(product_id, quantity=1):
     product_id = _check_product_exists(product_id)
     quantity = _check_quantity(quantity)
     return _call_db_function("SELECT * FROM calc_bom_by_class(%s, %s)", [product_id, quantity])
+
+"Классы, в которых у изделия есть ресурсы: остальные в расчёте дадут пустую таблицу"
+def calc_bom_classes(product_id, quantity=1):
+    product_id = _check_product_exists(product_id)
+    quantity = _check_quantity(quantity)
+    sql = """
+        SELECT n.id, n.name, n.parent_id, count(*) AS resource_count
+        FROM classifier_node n
+        CROSS JOIN LATERAL calc_bom(%s, %s, n.id) c
+        GROUP BY n.id, n.name, n.parent_id
+        ORDER BY n.name
+    """
+    return _call_db_function(sql, [product_id, quantity])
 
 "Создание модификации на основе базового изделия. Базовая спецификация копируется с флагом базы"
 def create_modification(base_product_id, name, designation=None):

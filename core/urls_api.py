@@ -77,6 +77,7 @@ urlpatterns = [
     path('bom/items/<int:bom_item_id>/delete/', api_views.api_delete_bom_item, name='api_delete_bom_item'),
     path('bom/<int:product_id>/tree/', api_views.api_bom_tree, name='api_bom_tree'),
     path('bom/<int:product_id>/calc/', api_views.api_bom_calc, name='api_bom_calc'),
+    path('bom/<int:product_id>/calc-classes/', api_views.api_bom_calc_classes, name='api_bom_calc_classes'),
     path('bom/<int:product_id>/calc-by-class/', api_views.api_bom_calc_by_class, name='api_bom_calc_by_class'),
     path('bom/<int:product_id>/changes/', api_views.api_bom_changes, name='api_bom_changes'),
     path('bom/<int:product_id>/change-log/', api_views.api_bom_change_log, name='api_bom_change_log'),

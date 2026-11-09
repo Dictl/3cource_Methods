@@ -4,8 +4,9 @@
 """
 import psycopg2
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.db import connection
-from django.test import TestCase
+from django.test import Client, TestCase
 
 from core.models import BomChange, BomChangeLog, BomItem, Product, Unit
 from core.service import (
@@ -18,6 +19,29 @@ from core.service import (
 )
 
 SCHEMA_FILE = settings.BASE_DIR / 'schema.sql'
+# Объекты, которые создаёт schema.sql (кроме функции sync_id_sequences и триггеров)
+SCHEMA_TABLES = [
+    ('MATERIALIZED VIEW', 'mv_parameter_aggregates'),
+    ('TABLE', 'bom_change_log'),
+    ('TABLE', 'bom_item'),
+    ('TABLE', 'bom_change'),
+    ('TABLE', 'product_type'),
+    ('TABLE', 'schema_version'),
+    ('TABLE', 'parameter_numeric_constraint'),
+    ('TABLE', 'product_parameter_value'),
+    ('TABLE', 'parameter_definition'),
+    ('TABLE', 'unit'),
+    ('TABLE', 'unit_dimension'),
+    ('TABLE', 'product_attribute_value'),
+    ('TABLE', 'enum_value'),
+    ('TABLE', 'enum_definition'),
+    ('TABLE', 'product'),
+    ('TABLE', 'classifier_node'),
+]
+SCHEMA_VIEWS = [
+    ('VIEW', 'v_parameter_aggregates'),
+    ('VIEW', 'v_inherited_parameters'),
+]
 
 # Изделия из демонстрационных данных schema.sql
 BASE_PRODUCT = 1       # Колбаса докторская Клинская 400 г
@@ -56,7 +80,9 @@ class BomTestCase(TestCase):
         conn.autocommit = True
         try:
             with conn.cursor() as cursor:
-                cursor.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+                # Удаляем только таблицы схемы: таблицы Django (auth_*) нужны клиентским тестам
+                for table in SCHEMA_TABLES + SCHEMA_VIEWS:
+                    cursor.execute(f"DROP {table[0]} IF EXISTS {table[1]} CASCADE")
                 cursor.execute(SCHEMA_FILE.read_text(encoding="utf-8"))
         finally:
             conn.close()
@@ -217,3 +243,155 @@ class ProductDeletionTests(BomTestCase):
 
         self.assertIn("Нельзя удалить товар", str(ctx.exception))
         self.assertTrue(Product.objects.filter(id=BASE_PRODUCT).exists())
+
+
+class BomApiTests(BomTestCase):
+    """Проверки HTTP-ручек спецификации тем же клиентом, что и фронтенд"""
+
+    def setUp(self):
+        super().setUp()
+        self.username = "bom-tester"
+        user = get_user_model().objects.create_user(
+            username=self.username, password="secret", is_staff=True,
+        )
+        self.client = Client()
+        self.client.force_login(user)
+        # ServerSessionMiddleware сбрасывает сессию, если в ней нет идентификатора запуска
+        session = self.client.session
+        session["_server_run_id"] = settings.SERVER_RUN_ID
+        session.save()
+
+    def _payload(self, response):
+        return response.json()["data"]
+
+    def test_items_endpoint_returns_rows_with_names(self):
+        response = self.client.get(f"/api/bom/{BASE_PRODUCT}/items/")
+
+        self.assertEqual(response.status_code, 200)
+        rows = self._payload(response)
+        self.assertEqual(len(rows), 3)
+        farsh = next(row for row in rows if row["component_id"] == FARSH)
+        self.assertEqual(farsh["component_name"], "Фарш «Докторский»")
+        self.assertEqual(farsh["unit_symbol"], "г")
+        self.assertEqual(farsh["quantity"], 440.0)
+        for row in rows:
+            self.assertIsNotNone(row["component_name"])
+            self.assertIsNotNone(row["unit_symbol"])
+
+    def test_items_endpoint_shows_inherited_base_norms(self):
+        response = self.client.get(f"/api/bom/{MODIFICATION}/items/")
+
+        self.assertEqual(response.status_code, 200)
+        rows = {row["component_id"]: row for row in self._payload(response)}
+        clips = rows[CLIPS]
+        self.assertTrue(clips["is_base"])
+        self.assertEqual(clips["quantity"], 2.0)
+        self.assertEqual(clips["unit_symbol"], "шт")
+        # Свои строки модификации не помечены как базовые и показывают свои нормы
+        self.assertFalse(rows[FARSH]["is_base"])
+        self.assertEqual(rows[FARSH]["quantity"], 880.0)
+        self.assertEqual(rows[CASING]["quantity"], 55.0)
+
+    def test_create_item_is_visible_in_change_log(self):
+        milk_unit = BomItem.objects.get(parent_product_id=FARSH, component_id=MILK).unit_id
+        response = self.client.post(
+            "/api/bom/items/create/",
+            data={
+                "parent_product_id": BASE_PRODUCT,
+                "component_id": MILK,
+                "quantity": 2,
+                "per_quantity": 100,
+                "unit_id": milk_unit,
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        log = self.client.get(f"/api/bom/{BASE_PRODUCT}/change-log/")
+        self.assertEqual(log.status_code, 200)
+        rows = self._payload(log)
+        added = next(row for row in rows if row["component_id"] == MILK)
+        self.assertEqual(added["operation"], "add")
+        self.assertEqual(added["changed_by"], self.username)
+        self.assertIsNotNone(added["change_no"])
+        self.assertEqual(added["component_name"], "Молоко сухое обезжиренное")
+
+    def test_update_inherited_row(self):
+        inherited = BomItem.objects.get(parent_product_id=MODIFICATION, component_id=CLIPS)
+        self.assertTrue(inherited.is_base)
+
+        response = self.client.put(
+            "/api/bom/items/update/",
+            data={"bom_item_id": inherited.id, "quantity": 3, "per_quantity": 1},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._payload(response)["quantity"], 3.0)
+        inherited.refresh_from_db()
+        self.assertEqual(float(inherited.quantity), 3.0)
+        # Правка унаследованной строки делает её собственной
+        self.assertFalse(inherited.is_base)
+
+    def test_delete_item_without_body(self):
+        item = BomItem.objects.get(parent_product_id=BASE_PRODUCT, component_id=CASING)
+
+        response = self.client.delete(f"/api/bom/items/{item.id}/delete/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(BomItem.objects.filter(id=item.id).exists())
+
+    def test_calc_classes_lists_only_classes_with_resources(self):
+        response = self.client.get(f"/api/bom/{BASE_PRODUCT}/calc-classes/?quantity=1000")
+
+        self.assertEqual(response.status_code, 200)
+        classes = {row["id"]: row for row in self._payload(response)}
+        # Классы изделий (1–20) ресурсов не содержат и в выборе не нужны
+        self.assertNotIn(12, classes)
+        self.assertEqual(classes[22]["resource_count"], 2)
+        self.assertEqual(classes[23]["resource_count"], 3)
+        self.assertEqual(classes[21]["resource_count"], 7)
+
+    def test_calc_with_class_filters_rows(self):
+        response = self.client.get(f"/api/bom/{BASE_PRODUCT}/calc/?quantity=1000&class_id=22")
+
+        self.assertEqual(response.status_code, 200)
+        rows = self._payload(response)
+        self.assertEqual({row["component_id"] for row in rows}, {BEEF, PORK})
+        self.assertEqual(rows[0]["class_name"], "Мясное сырьё")
+
+    def test_calc_quantity_scales_norms(self):
+        response = self.client.get(f"/api/bom/{BASE_PRODUCT}/calc/?quantity=2000")
+
+        self.assertEqual(response.status_code, 200)
+        rows = {row["component_id"]: row for row in self._payload(response)}
+        self.assertEqual(rows[BEEF]["total_quantity"], 220.0)
+
+    def test_cycle_returns_db_message(self):
+        # Цикл проверяется только после размерности, поэтому оба изделия — в кг
+        mass_unit = Unit.objects.get(symbol="кг")
+        first = Product.objects.create(
+            name="API цикл A", classifier_node_id=FARSH_NODE, price=1, supplier="test",
+            weight_gram=1, product_type_id="part", unit_id=mass_unit.id,
+        )
+        second = Product.objects.create(
+            name="API цикл B", classifier_node_id=FARSH_NODE, price=1, supplier="test",
+            weight_gram=1, product_type_id="part", unit_id=mass_unit.id,
+        )
+        create_bom_item(first.id, second.id, 1, 1, mass_unit.id, author="tester")
+
+        response = self.client.post(
+            "/api/bom/items/create/",
+            data={
+                "parent_product_id": second.id,
+                "component_id": first.id,
+                "quantity": 1,
+                "per_quantity": 1,
+                "unit_id": mass_unit.id,
+            },
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.json()["ok"])
+        self.assertIn("цикл", response.json()["error"])

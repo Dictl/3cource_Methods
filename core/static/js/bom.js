@@ -37,15 +37,24 @@ function loadBomProducts() {
     });
 }
 
+// Классы, в которых у изделия есть ресурсы: остальные в расчёте дадут пустую таблицу
 function loadBomClasses() {
-    return apiRequest('/api/tree/').then(function (nodes) {
-        var html = '<option value="">— Все ресурсы —</option>';
-        nodes.forEach(function (n) {
-            var indent = new Array(n.level + 1).join('   ');
-            html += '<option value="' + n.id + '">' + indent + escapeHtml(n.name) + '</option>';
+    if (bomProductId === null) return Promise.resolve();
+
+    var quantity = document.getElementById('bomQuantity').value || 1;
+    var selected = bomClassSelect.value;
+
+    return apiRequest('/api/bom/' + bomProductId + '/calc-classes/?quantity=' + encodeURIComponent(quantity))
+        .then(function (rows) {
+            var html = '<option value="">— Все ресурсы —</option>';
+            rows.forEach(function (c) {
+                html += '<option value="' + c.id + '">'
+                    + escapeHtml(c.name) + ' (' + c.resource_count + ')'
+                    + '</option>';
+            });
+            bomClassSelect.innerHTML = html;
+            if (selected) bomClassSelect.value = selected;
         });
-        bomClassSelect.innerHTML = html;
-    });
 }
 
 function loadBomUnits() {
@@ -81,7 +90,6 @@ tabLoaders.bom = function () {
     }).catch(function (err) {
         showMessage(err.message, 'error');
     });
-    loadBomClasses();
     loadBomUnits();
 };
 
@@ -112,7 +120,8 @@ function showBomProduct(productId) {
     loadBomUnits();
     loadBomComponents();
     loadBomTree();
-    loadBomCalc();
+    // Расчёт зависит от списка классов, поэтому запускаем после его загрузки
+    loadBomClasses().then(loadBomCalc).catch(loadBomCalc);
     loadBomChanges();
 }
 
@@ -206,7 +215,7 @@ function loadBomCalc() {
                 { title: 'Класс', render: function (r) { return escapeHtml(r.class_name); } },
                 { title: 'Количество', num: true, render: function (r) { return formatNumber(r.total_quantity) + ' ' + escapeHtml(r.unit); } },
                 { title: 'Стоимость, руб', num: true, render: function (r) { return formatNumber(r.total_cost); } }
-            ], rows, 'Нечего считать');
+            ], rows, 'В выбранном классе нет ресурсов — выберите другой или «Все ресурсы»');
 
             if (rows.length) {
                 html += '<p><b>Итого стоимость: ' + formatNumber(total) + ' руб</b></p>';
@@ -382,6 +391,15 @@ document.addEventListener('click', function (e) {
 document.getElementById('bomCalcForm').addEventListener('submit', function (e) {
     e.preventDefault();
     loadBomCalc();
+});
+
+// Расчёт обновляется сразу при смене количества или класса — кнопка не обязательна
+bomClassSelect.addEventListener('change', function () {
+    if (bomProductId !== null) loadBomCalc();
+});
+
+document.getElementById('bomQuantity').addEventListener('change', function () {
+    if (bomProductId !== null) loadBomCalc();
 });
 
 document.getElementById('bomModForm').addEventListener('submit', function (e) {

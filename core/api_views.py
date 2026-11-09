@@ -61,6 +61,7 @@ from .service import (
     find_bom,
     calc_bom,
     calc_bom_by_class,
+    calc_bom_classes,
     create_modification,
     register_change,
     get_bom_changes,
@@ -1361,6 +1362,7 @@ def _serialize_bom_change(change):
     }
 
 
+"Строка состава из модели BomItem. Изделие и ЕИ нужны для названия и символа — их берём запросами"
 def _serialize_bom_item(item):
     component = Product.objects.filter(id=item.component_id).first()
     unit = Unit.objects.filter(id=item.unit_id).first()
@@ -1379,12 +1381,29 @@ def _serialize_bom_item(item):
         "is_base": bool(item.is_base),
     }
 
+"Строка эффектного состава из bom_effective: названия и символы уже в самой строке, доп. запросов нет"
+def _serialize_bom_row(row):
+    return {
+        "id": row["id"],
+        "parent_product_id": row["parent_product_id"],
+        "component_id": row["component_id"],
+        "component_name": row["component_name"],
+        "component_designation": row["component_designation"],
+        "product_type_code": row["product_type_code"],
+        "position_no": row["position_no"],
+        "quantity": float(row["quantity"]) if row["quantity"] is not None else None,
+        "per_quantity": float(row["per_quantity"]) if row["per_quantity"] is not None else None,
+        "unit_id": row["unit_id"],
+        "unit_symbol": row["unit_symbol"],
+        "is_base": bool(row["is_base"]),
+    }
+
 "Список строк состава изделия для редактора"
 @require_http_methods(["GET"])
 def api_bom_items(request, product_id):
     try:
         rows = list_bom_items(product_id)
-        return JsonResponse({"ok": True, "data": [_serialize_bom_item(r) for r in rows]})
+        return JsonResponse({"ok": True, "data": [_serialize_bom_row(r) for r in rows]})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
 
@@ -1459,6 +1478,15 @@ def api_bom_calc(request, product_id):
     try:
         class_id = request.GET.get("class_id") or None
         rows = calc_bom(product_id, request.GET.get("quantity", 1), class_id)
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Классы, в которых у изделия есть ресурсы: для выбора в расчёте потребности"
+@require_http_methods(["GET"])
+def api_bom_calc_classes(request, product_id):
+    try:
+        rows = calc_bom_classes(product_id, request.GET.get("quantity", 1))
         return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
