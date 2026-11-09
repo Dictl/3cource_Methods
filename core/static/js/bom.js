@@ -18,6 +18,8 @@ var bomContent = document.getElementById('bomContent');
 var bomProductId = null;
 var bomProductsLoaded = false;
 var bomUnits = [];
+var bomCurrentRows = [];
+var bomTreeRows = [];
 
 // Типы, у которых может быть состав (материалы и покупные изделия — нет)
 var BOM_TYPES = ['part', 'assembly', 'kit', 'complex'];
@@ -68,15 +70,31 @@ function loadBomUnits() {
     });
 }
 
+// Компоненты, которые нельзя добавить: уже в составе или содержат текущее изделие
+// (а также его предков) — добавление дало бы цикл. Сервер эти же случаи отклоняет.
+function bomBlockedComponents() {
+    var blocked = {};
+    if (bomProductId) {
+        blocked[bomProductId] = true;
+        bomCurrentRows.forEach(function (r) { blocked[r.component_id] = true; });
+    }
+    bomTreeRows.forEach(function (r) {
+        // строка дерева — parent_product_id уже развёрнутого компонента: так находятся предки
+        if (r.component_id === bomProductId) blocked[r.parent_product_id] = true;
+    });
+    return blocked;
+}
+
 function loadBomComponents() {
     if (!bomProductId) {
         bomComponentSelect.innerHTML = '<option value="">— Выберите изделие —</option>';
         return Promise.resolve();
     }
+    var blocked = bomBlockedComponents();
     return apiRequest('/api/products/').then(function (products) {
         var html = '<option value="">— Выберите компонент —</option>';
         products.forEach(function (p) {
-            if (p.id === bomProductId) return;
+            if (blocked[p.id]) return;
             html += '<option value="' + p.id + '">' + escapeHtml(p.designation || p.name) + ' — ' + escapeHtml(p.name) + '</option>';
         });
         bomComponentSelect.innerHTML = html;
@@ -138,6 +156,8 @@ function loadBomTree() {
         .then(function (results) {
             var rows = results[0] || [];
             var treeRows = results[1] || [];
+            bomCurrentRows = rows;
+            bomTreeRows = treeRows;
             var unitOptions = bomUnits.map(function (u) {
                 return '<option value="' + u.id + '">' + escapeHtml(u.symbol + ' — ' + u.name) + '</option>';
             }).join('');
@@ -169,6 +189,7 @@ function loadBomTree() {
             });
             html += '</tbody></table></div>';
             box.innerHTML = html;
+            loadBomComponents();
 
             if (treeRows.length) {
                 var treeHint = '<h4>Дерево состава</h4>' + renderTable([
