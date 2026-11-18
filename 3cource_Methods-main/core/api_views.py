@@ -1,0 +1,2067 @@
+import json
+from decimal import Decimal
+from django.shortcuts import get_object_or_404
+from django.http import JsonResponse
+from django.views.decorators.http import require_http_methods
+from core.models import (
+    ClassifierNode, Product, EnumDefinition, EnumValue, ProductAttributeValue,
+    ParameterDefinition, ProductParameterValue, ParameterNumericConstraint,
+    Unit, UnitDimension
+)
+from django.db import connection, DatabaseError
+from django.views.decorators.csrf import csrf_exempt
+
+from .service import (
+    add_category,
+    add_product,
+    base_output,
+    base_product_output,
+    build_tree_with_levels,
+    display_parent_product,
+    move_category,
+    reorder_category,
+    search_child_nodes,
+    search_delete_category,
+    search_delete_product,
+    search_parent_nodes,
+    has_children,
+    get_enum_definition_with_values,
+    get_all_enums_with_values,
+    reorder_enum_value,
+    create_enum_definition,
+    add_enum_value,
+    update_enum_value,
+    delete_enum_value,
+    delete_enum_definition,
+    enum_definitions_for_class_tree,
+    assign_enum_value_to_product,
+    product_attribute_values_output,
+    get_product_enums,
+    delete_product_attribute,
+    update_product_attribute,
+    get_all_parameter_definition,
+    get_class_parameters_with_inheritance,
+    create_unit_dimension,
+    delete_unit_dimension,
+    create_unit,
+    delete_unit,
+    create_parameter_definition,
+    delete_parameter_definition,
+    update_parameter_definition,
+    create_product_parameter_value,
+    update_product_parameter_value,
+    delete_product_parameter_value,
+    find_products_with_params_and_attrs,
+    filter_products_by_parameters,
+    filter_products_by_parameters_without_class,
+    list_bom_items,
+    create_bom_item,
+    update_bom_item,
+    delete_bom_item,
+    find_bom,
+    calc_bom,
+    calc_bom_by_class,
+    calc_bom_classes,
+    create_modification,
+    register_change,
+    get_bom_changes,
+    get_bom_change_log,
+    find_route_deep,
+    calc_labor,
+    calc_cost,
+)
+from .service import (
+    get_routable_products, get_routes, get_route_details,
+    create_route, update_route, delete_route,
+    create_route_operation, update_route_operation, move_route_operation, delete_route_operation,
+    add_operation_tool, update_operation_tool, delete_operation_tool,
+    add_operation_material, update_operation_material, delete_operation_material,
+)
+
+def _json_error(message, status=400):
+    return JsonResponse({"ok": False, "error": message}, status=status)
+
+
+"Текст ошибки БД: сначала сообщение RAISE EXCEPTION, потом общий текст исключения"
+def _db_message(e):
+    diag = getattr(e.__cause__, "diag", None)
+    return diag.message_primary if diag and diag.message_primary else str(e)
+
+
+def _parse_json(request):
+    try:
+        return json.loads(request.body.decode("utf-8"))
+    except (TypeError, ValueError):
+        raise ValueError("Некорректный JSON")
+
+
+def _serialize_product(product):
+    return {
+        "id": product.id,
+        "name": product.name,
+        "sku": product.sku,
+        "price": product.price,
+        "supplier": product.supplier,
+        "weight_gram": product.weight_gram,
+        "classifier_node_id": product.classifier_node_id,
+        "designation": product.designation,
+        "product_type": product.product_type_id,
+        "unit_id": product.unit_id,
+        "base_product_id": product.base_product_id,
+    }
+
+
+def _serialize_enum_definition(ed):
+    return {
+        "id": ed.id,
+        "classifier_node_id": ed.classifier_node_id,
+        "description": ed.description,
+    }
+
+def _serialize_enum_value(ev):
+    return {
+        "id": ev.id,
+        "enum_definition_id": ev.enum_definition_id,
+        "value_str": ev.value_str,
+        "value_int": ev.value_int,
+        "value_real": ev.value_real,
+        "sort_order": ev.sort_order,
+    }
+
+def _serialize_product_attribute_value(pav):
+    return {
+        "id": pav.id,
+        "product_id": pav.product_id,
+        "enum_value_id": pav.enum_value_id,
+    }
+
+def _serialize_unit_dimension(ud):
+    return {"id": ud.id, "name": ud.name}
+
+def _serialize_unit(u):
+    return {
+        "id": u.id,
+        "dimension_id": u.dimension_id,
+        "dimension_name": u.dimension.name if hasattr(u, 'dimension') and u.dimension else None,
+        "name": u.name,
+        "symbol": u.symbol,
+        "to_base_factor": float(u.to_base_factor) if u.to_base_factor else None,
+        "to_base_offset": float(u.to_base_offset) if u.to_base_offset else None,
+    }
+
+def _serialize_parameter_definition(pd):
+    result = {
+        "id": pd.id,
+        "classifier_node_id": pd.classifier_node_id,
+        "name": pd.name,
+        "unit_id": pd.unit_id,
+        "unit_symbol": pd.unit.symbol if pd.unit else None,
+        "value_type": pd.value_type,
+        "sort_order": pd.sort_order,
+    }
+    if pd.value_type in ("int", "real"):
+        constraint = ParameterNumericConstraint.objects.filter(
+            parameter_definition_id=pd.id
+        ).first()
+        result["min_value"] = float(constraint.min_value) if constraint else 0
+        result["max_value"] = float(constraint.max_value) if constraint else None
+    if pd.value_type == "enum":
+        enum_definition = EnumDefinition.objects.filter(
+            classifier_node_id=pd.classifier_node_id
+        ).first()
+        result["enum_values"] = [
+            _serialize_enum_value(value)
+            for value in EnumValue.objects.filter(
+                enum_definition=enum_definition
+            ).order_by("sort_order", "id")
+        ] if enum_definition else []
+    elif pd.value_type == "str":
+        result["allowed_values"] = [
+            value for value in ProductParameterValue.objects.filter(
+                parameter_definition_id=pd.id,
+                value_str__isnull=False,
+            ).values_list("value_str", flat=True).distinct().order_by("value_str")
+            if value
+        ]
+    return result
+
+def _serialize_product_parameter_value(ppv):
+    return {
+        "id": ppv.id,
+        "product_id": ppv.product_id,
+        "parameter_definition_id": ppv.parameter_definition_id,
+        "value_str": ppv.value_str,
+        "value_int": ppv.value_int,
+        "value_real": float(ppv.value_real) if ppv.value_real is not None else None,
+        "value_enum_id": ppv.value_enum_id,
+    }
+
+"Построение дерева категорий (classifier_node) с учетом уровня вложенности (level для древовидного вывода)"
+@require_http_methods(["GET"])
+def api_tree(request):
+    nodes = build_tree_with_levels(base_output())
+    data = [
+        {
+            "id": n.id,
+            "name": n.name,
+            "parent_id": n.parent_id,
+            "level": getattr(n, "level", 0),
+            "unit": n.unit,
+            "sort_order": n.sort_order,
+            "base_unit_id": n.base_unit_id,
+        }
+        for n in nodes
+    ]
+    return JsonResponse({"ok": True, "data": data})
+
+"Получение продуктов для выбранной категории (и всех подкатегорий) по её id"
+@require_http_methods(["GET"])
+def api_category_products(request, category_id):
+    all_categories = base_output()
+    all_products = base_product_output()
+
+    selected_category = get_object_or_404(ClassifierNode, id=category_id)
+    _, products = display_parent_product(all_categories, all_products, category_id)
+
+    return JsonResponse(
+        {
+            "ok": True,
+            "data": {
+                "category": {
+                    "id": selected_category.id,
+                    "name": selected_category.name,
+                    "parent_id": selected_category.parent_id,
+                },
+                "products": [_serialize_product(p) for p in products],
+            },
+        }
+    )
+
+"Получение всех дочерних (потомков) для данной категории (classifier_node.id)"
+@require_http_methods(["GET"])
+def api_get_children(request, category_id):
+    all_cats = base_output()
+    category = get_object_or_404(ClassifierNode, id=category_id)
+    descendants = search_child_nodes(all_cats, category_id)
+    return JsonResponse({"ok": True, "data": {
+        "category": {"id": category.id, "name": category.name, "parent_id": category.parent_id},
+        "children": [{"id": c.id, "name": c.name, "parent_id": c.parent_id} for c in descendants]
+    }})
+
+"Получение родителей для заданной категории (classifier_node.id)"
+@require_http_methods(["GET"])
+def api_get_parents(request, category_id):
+    all_cats = base_output()
+    category = get_object_or_404(ClassifierNode, id=category_id)
+    parents = search_parent_nodes(all_cats, category_id)
+    return JsonResponse({"ok": True, "data": {
+        "category": {"id": category.id, "name": category.name, "parent_id": category.parent_id},
+        "parents": [{"id": p.id, "name": p.name, "parent_id": p.parent_id} for p in parents]
+    }})
+
+"Получение всех терминальных узлов в поддереве выбранной категории"
+@require_http_methods(["GET"])
+def api_get_terminals(request, category_id):
+    all_cats = base_output()
+    category = get_object_or_404(ClassifierNode, id=category_id)
+    descendants = search_child_nodes(all_cats, category_id)
+    descendants.append(category)
+    terminal_nodes = [n for n in descendants if not has_children(all_cats, n.id)]
+    return JsonResponse({"ok": True, "data": {
+        "category": {"id": category.id, "name": category.name, "parent_id": category.parent_id},
+        "terminal_nodes": [{"id": n.id, "name": n.name, "parent_id": n.parent_id} for n in terminal_nodes]
+    }})
+
+"Добавление новой категории (classifier_node) — имя обязательно, к терминальному узлу добавить нельзя"
+@require_http_methods(["POST"])
+def api_add_category(request):
+    try:
+        payload = _parse_json(request)
+        name = (payload.get("name") or "").strip()
+        if not name:
+            return _json_error("Название категории обязательно")
+
+        parent_id = payload.get("parent_id")
+        parent_id = None if parent_id in ("", None) else int(parent_id)
+        unit = payload.get("unit")
+        base_unit_id = payload.get("base_unit_id")
+        base_unit_id = None if base_unit_id in ("", None) else int(base_unit_id)
+
+        category = add_category(name, parent_id, unit, base_unit_id)
+        return JsonResponse(
+            {
+                "ok": True,
+                "data": {
+                    "id": category.id,
+                    "name": category.name,
+                    "parent_id": category.parent_id,
+                    "unit": category.unit,
+                    "base_unit_id": category.base_unit_id,
+                },
+            }
+        )
+    except ValueError as e:
+        return _json_error(str(e))
+
+"Добавление нового продукта (product) в категорию. Нельзя добавить к нетерминальному узлу"
+@require_http_methods(["POST"])
+def api_add_product(request):
+    try:
+        payload = _parse_json(request)
+        name = (payload.get("name") or "").strip()
+        if not name:
+            return _json_error("Название товара обязательно")
+
+        category_id = payload.get("parent_id")
+        if category_id in ("", None):
+            return _json_error("Для товара нужно выбрать родительскую категорию")
+
+        product = add_product(
+            name=name,
+            category_id=int(category_id),
+            sku=(payload.get("sku") or "").strip() or None,
+            price=int(payload.get("price")),
+            supplier=(payload.get("supplier") or "").strip(),
+            weight_gram=int(payload.get("weight_gram")),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_product(product)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_product(request):
+    try:
+        payload = _parse_json(request)
+        product = Product.objects.filter(id=int(payload.get("product_id"))).first()
+        if product is None:
+            return _json_error("Изделие не найдено", 404)
+        for field in ("name", "sku", "supplier", "designation"):
+            if field in payload:
+                value = payload[field]
+                setattr(product, field, (value or "").strip() or None if field != "name" else (value or "").strip())
+        for field in ("price", "weight_gram"):
+            if field in payload:
+                setattr(product, field, int(payload[field]))
+        if "product_type" in payload:
+            product.product_type_id = payload["product_type"]
+        if "unit_id" in payload:
+            product.unit_id = payload["unit_id"] or None
+        product.save()
+        return JsonResponse({"ok": True, "data": _serialize_product(product)})
+    except DatabaseError as e:
+        return _json_error(_db_message(e))
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Перемещение категории (classifier_node) к другому родителю. Запрещено перемещать в терминальную категорию с товарами или делать цикл"
+@require_http_methods(["PUT"])
+def api_move_category(request):
+    try:
+        payload = _parse_json(request)
+        category_id = int(payload.get("category_id"))
+        new_parent_id = payload.get("new_parent_id")
+        new_parent_id = None if new_parent_id in ("", None) else int(new_parent_id)
+        if Product.objects.filter(classifier_node_id=new_parent_id).exists():
+            raise ValueError("Нельзя переместить категорию в терминальный узел, содержащий товары")
+
+        move_category(category_id, new_parent_id)
+        return JsonResponse({"ok": True, "message": "Категория перемещена"})
+    except ValueError as e:
+        return _json_error(str(e))
+
+"Изменение порядка расстановки категорий (classifier_node) среди братьев на одном уровне"
+@require_http_methods(["PUT"])
+def api_reorder_category(request):
+    try:
+        payload = _parse_json(request)
+        category_id = int(payload.get("category_id"))
+        target_position_id = payload.get("target_position_id")
+        target_position_id = None if target_position_id in ("", None) else int(target_position_id)
+
+        reorder_category(category_id, target_position_id)
+        return JsonResponse({"ok": True, "message": "Порядок обновлен"})
+    except ValueError as e:
+        return _json_error(str(e))
+
+"""Получить дополнительную мета-информацию для интерфейса выбора новой родительской категории при перемещении
+    Возвращает, можно ли переместить в ту или иную вершину, и причину блокировки (например, 'cycle', 'terminal')
+"""
+@require_http_methods(["GET"])
+def api_nodes_move_metadata(request):
+    moving_node_id = request.GET.get("node_id")
+    if not moving_node_id:
+        return _json_error("node_id required")
+
+    all_base = base_output()
+    all_products = base_product_output()
+    moving_node_id = int(moving_node_id)
+
+    child_ids = {child.id for child in search_child_nodes(all_base, moving_node_id)} | {moving_node_id}
+    terminal_ids = {p.classifier_node_id for p in all_products}
+
+    result = []
+    for node in build_tree_with_levels(all_base):
+        reason = None
+        if node.id in child_ids:
+            reason = "cycle"
+        elif node.id in terminal_ids:
+            reason = "terminal"
+
+        result.append({
+            "id": node.id,
+            "name": node.name,
+            "level": node.level,  # type: ignore
+            "disabled": reason is not None,
+            "reason": reason
+        })
+
+    return JsonResponse({"nodes": result})
+
+"Получение информации о категории (classifier_node) и всех её потомках"
+@require_http_methods(["GET"])
+def api_category(request, category_id):
+    category_id = int(category_id)
+    category = get_object_or_404(ClassifierNode, id=category_id)
+
+    # Получаем информацию о категории
+    category_data = {
+        "id": category.id,
+        "name": category.name,
+        "parent_id": category.parent_id,
+        "unit": category.unit,
+        "sort_order": category.sort_order,
+    }
+
+    descendants = search_child_nodes(base_output(), category_id)
+    descendants_data = [
+        {
+            "id": d.id,
+            "name": d.name,
+            "parent_id": d.parent_id,
+        }
+        for d in descendants
+    ]
+
+    return JsonResponse({
+        "ok": True,
+        "data": {
+            "category": category_data,
+            "descendants": descendants_data
+        }
+    })
+
+"Получение списка всех категорий (classifier_node)"
+@require_http_methods(["GET"])
+def api_categories(request):
+    all_base = base_output()
+    data = [
+        {
+            "id": node.id,
+            "name": node.name,
+            "parent_id": node.parent_id,
+            "unit": node.unit,
+            "sort_order": node.sort_order,
+        }
+        for node in all_base
+    ]
+    return JsonResponse({"ok": True, "data": data})
+
+"Получение списка всех товаров (product)"
+@require_http_methods(["GET"])
+def api_products(request):
+    all_products = base_product_output()
+    data = [_serialize_product(product) for product in all_products]
+    return JsonResponse({"ok": True, "data": data})
+
+"Получение подробной информации по отдельному товару (product) по id"
+@require_http_methods(["GET"])
+def api_product(request, product_id):
+    product_id = int(product_id)
+    product = get_object_or_404(Product, id=product_id)
+    data = _serialize_product(product)
+    return JsonResponse({"ok": True, "data": data})
+
+"Удаление категории (classifier_node) по id (с проверкой, что в ней нет товаров и терминалов с товарами)"
+@require_http_methods(["DELETE"])
+def api_delete_category(request):
+    try:
+        payload = _parse_json(request)
+        category_id = int(payload.get("delete_id"))
+        search_delete_category(category_id)
+        return JsonResponse({"ok": True})
+    except (ValueError, KeyError) as e:
+        return _json_error(str(e))
+
+"Удаление товара (product) по id"
+@require_http_methods(["DELETE"])
+def api_delete_product(request):
+    try:
+        payload = _parse_json(request)
+        product_id = int(payload.get("delete_id"))
+        search_delete_product(product_id)
+        return JsonResponse({"ok": True})
+    except (ValueError, KeyError) as e:
+        return _json_error(str(e))
+
+########################################################################################################################
+"для перечислений"
+########################################################################################################################
+"Получить описание перечисления (enum_definition) и все значения (enum_value) для него"
+@require_http_methods(["GET"])
+def api_enum_definition(request, enum_definition_id):
+    try:
+        ed, values = get_enum_definition_with_values(enum_definition_id)
+        return JsonResponse({
+            "ok": True,
+            "data": {
+                "enum_definition": _serialize_enum_definition(ed),
+                "values": [_serialize_enum_value(v) for v in values],
+            }
+        })
+    except ValueError as e:
+        return _json_error(str(e))
+
+"Получить все перечисления (enum_definition) с их значениями (enum_value)"
+@require_http_methods(["GET"])
+def api_enums_all(request):
+    # возвращаем все enum_definition с их values
+    result = get_all_enums_with_values()
+    data = []
+    for item in result:
+        ed = item["enum_definition"]
+        vals = item["values"]
+        data.append({
+            "enum_definition": _serialize_enum_definition(ed),
+            "values": [_serialize_enum_value(v) for v in vals],
+        })
+    return JsonResponse({"ok": True, "data": data})
+
+"Получить все перечисления (enum_definition), определённые для категории и её потомков"
+@require_http_methods(["GET"])
+def api_enums_for_class_tree(request, classifier_node_id):
+    try:
+        enum_defs = enum_definitions_for_class_tree(classifier_node_id)
+        return JsonResponse({
+            "ok": True,
+            "data": [{
+                "id": ed.id,
+                "classifier_node_id": ed.classifier_node_id,
+                "description": ed.description,
+                "values": [
+                    _serialize_enum_value(value)
+                    for value in EnumValue.objects.filter(
+                        enum_definition_id=ed.id
+                    ).order_by("sort_order", "id")
+                ],
+            } for ed in enum_defs]
+        })
+    except ValueError as e:
+        return _json_error(str(e))
+
+"Создание нового перечисления (enum_definition) для категории (classifier_node)"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_enum_definition(request):
+    try:
+        payload = _parse_json(request)
+        classifier_node_id = payload.get("classifier_node_id")
+        description = payload.get("description")
+
+        if classifier_node_id in (None, ""):
+            return _json_error("classifier_node_id обязателен")
+
+        ed = create_enum_definition(int(classifier_node_id), description)
+        return JsonResponse({"ok": True, "data": _serialize_enum_definition(ed)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_enum_definition(request):
+    try:
+        payload = _parse_json(request)
+        enum_definition_id = payload.get("enum_definition_id")
+        description = (payload.get("description") or "").strip()
+        if enum_definition_id in (None, "") or not description:
+            return _json_error("enum_definition_id и description обязательны")
+        enum_definition = EnumDefinition.objects.get(id=int(enum_definition_id))
+        duplicate = EnumDefinition.objects.filter(
+            description__iexact=description
+        ).exclude(id=enum_definition.id).exists()
+        if duplicate:
+            return _json_error("Такое перечисление уже существует")
+        enum_definition.description = description
+        enum_definition.save(update_fields=["description"])
+        return JsonResponse({"ok": True, "data": _serialize_enum_definition(enum_definition)})
+    except EnumDefinition.DoesNotExist:
+        return _json_error("Перечисление не найдено", 404)
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Добавление нового значения перечисления (enum_value) в выбранное перечисление (enum_definition)"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_add_enum_value(request):
+    try:
+        payload = _parse_json(request)
+        enum_definition_id = payload.get("enum_definition_id")
+        value_str = payload.get("value_str")
+        value_int = payload.get("value_int")
+        value_real = payload.get("value_real")
+
+        if enum_definition_id in (None, ""):
+            return _json_error("enum_definition_id обязателен")
+
+        if value_int in ("", None):
+            value_int = None
+        else:
+            value_int = int(value_int)
+
+        if value_real in ("", None):
+            value_real = None
+        else:
+            value_real = float(value_real)
+
+        ev = add_enum_value(
+            int(enum_definition_id),
+            value_str=value_str,
+            value_int=value_int,
+            value_real=value_real,
+        )
+        return JsonResponse({"ok": True, "data": _serialize_enum_value(ev)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить значение перечисления (enum_value) по его id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_enum_value(request):
+    try:
+        payload = _parse_json(request)
+        enum_value_id = payload.get("enum_value_id")
+        if enum_value_id in (None, ""):
+            return _json_error("enum_value_id обязателен")
+
+        delete_enum_value(int(enum_value_id))
+        return JsonResponse({"ok": True, "data": {"deleted": int(enum_value_id)}})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_enum_value(request):
+    try:
+        payload = _parse_json(request)
+        value_int = payload.get("value_int")
+        value_real = payload.get("value_real")
+        ev = update_enum_value(
+            payload.get("enum_value_id"),
+            payload.get("value_str"),
+            None if value_int in ("", None) else int(value_int),
+            None if value_real in ("", None) else float(value_real),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_enum_value(ev)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить перечисление (enum_definition), если оно пустое (нет ни одного enum_value)"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_enum_definition(request):
+    try:
+        payload = _parse_json(request)
+        enum_definition_id = payload.get("enum_definition_id")
+        if enum_definition_id in (None, ""):
+            return _json_error("enum_definition_id обязателен")
+
+        delete_enum_definition(int(enum_definition_id))
+        return JsonResponse({"ok": True, "data": {"deleted": int(enum_definition_id)}})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Изменить порядок enum_value внутри одного перечисления (enum_definition)"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_reorder_enum_value(request):
+    try:
+        payload = _parse_json(request)
+        enum_value_id = payload.get("enum_value_id")
+        target_position_id = payload.get("target_position_id")
+
+        if enum_value_id in (None, ""):
+            return _json_error("enum_value_id обязателен")
+
+        if target_position_id in ("", None):
+            target_position_id = None
+        else:
+            target_position_id = int(target_position_id)
+
+        reorder_enum_value(int(enum_value_id), target_position_id)
+        return JsonResponse({"ok": True, "message": "Порядок enum_value обновлен"})
+    except (TypeError, ValueError, EnumValue.DoesNotExist) as e:
+        return _json_error(str(e))
+
+"Назначить значение перечисления (enum_value) товару (product)"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_assign_enum_value_to_product(request):
+    try:
+        payload = _parse_json(request)
+        product_id = payload.get("product_id")
+        enum_value_id = payload.get("enum_value_id")
+
+        if product_id in (None, ""):
+            return _json_error("product_id обязателен")
+
+        if enum_value_id in ("", None):
+            enum_value_id = None
+        else:
+            enum_value_id = int(enum_value_id)
+
+        pav = assign_enum_value_to_product(int(product_id), enum_value_id)
+        return JsonResponse({"ok": True, "data": _serialize_product_attribute_value(pav)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Получить все product_attribute_value (атрибуты товаров, отношение товар/значение enum)"
+@require_http_methods(["GET"])
+def api_product_attribute_values(request):
+    pavs = product_attribute_values_output()
+    return JsonResponse({
+        "ok": True,
+        "data": [_serialize_product_attribute_value(p) for p in pavs]
+    })
+
+"Получить все характеристики-атрибуты для товара (product) по его id"
+@require_http_methods(["GET"])
+def api_product_enums(request, product_id):
+    try:
+        product = Product.objects.get(id=product_id)
+    except Product.DoesNotExist:
+        return JsonResponse({"ok": False, "error": "Product not found"}, status=404)
+
+    enums = get_product_enums(product.id)
+
+    seen = set()
+    enums_unique = []
+    for item in enums:
+        key = (item["enum_definition"]["id"], item["enum_value"]["id"])
+        if key not in seen:
+            seen.add(key)
+            enums_unique.append(item)
+
+    return JsonResponse({
+        "product": {
+            "id": product.id,
+            "name": product.name,
+        },
+        "enums": enums_unique
+    })
+
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_product_attribute(request):
+    try:
+        payload = _parse_json(request)
+        attribute_id = payload.get("product_attribute_value_id")
+        enum_value_id = payload.get("enum_value_id")
+        if attribute_id in (None, "") or enum_value_id in (None, ""):
+            return _json_error("product_attribute_value_id и enum_value_id обязательны")
+        attribute = update_product_attribute(attribute_id, enum_value_id)
+        return JsonResponse({"ok": True, "data": _serialize_product_attribute_value(attribute)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить характеристику товара (product_attribute_value) по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_product_attribute(request):
+    try:
+        payload = _parse_json(request)
+        attribute_id = payload.get("product_attribute_value_id")
+        if attribute_id in (None, ""):
+            return _json_error("product_attribute_value_id обязателен")
+
+        delete_product_attribute(int(attribute_id))
+        return JsonResponse({"ok": True, "data": {"deleted": int(attribute_id)}})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+########################################################################################################################
+"справочник"
+########################################################################################################################
+"Получить все определения параметров (parameter_definition)"
+@require_http_methods(["GET"])
+def api_parameters(request):
+    params = get_all_parameter_definition()
+    return JsonResponse({"ok": True, "data": [_serialize_parameter_definition(p) for p in params]})
+
+"Получить параметры (parameter_definition) для категории с учетом наследования от родителей"
+@require_http_methods(["GET"])
+def api_parameters_for_category(request, category_id):
+    params = get_class_parameters_with_inheritance(category_id)
+    return JsonResponse({"ok": True, "data": [_serialize_parameter_definition(p) for p in params]})
+
+"Создать новый параметр (parameter_definition) для категории (classifier_node)"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_parameter(request):
+    try:
+        payload = _parse_json(request)
+        pd = create_parameter_definition(
+            classifier_node_id=payload.get("classifier_node_id"),
+            name=payload.get("name"),
+            unit_id=payload.get("unit_id"),
+            value_type=payload.get("value_type"),
+            sort_order=payload.get("sort_order", 0),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_parameter_definition(pd)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Обновить параметр (parameter_definition) по id"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_parameter(request):
+    try:
+        payload = _parse_json(request)
+        pd = update_parameter_definition(
+            parameter_definition_id=payload.get("parameter_definition_id"),
+            name=payload.get("name"),
+            unit_id=payload.get("unit_id"),
+            value_type=payload.get("value_type"),
+            sort_order=payload.get("sort_order"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_parameter_definition(pd)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить параметр (parameter_definition) по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_parameter(request, param_def_id):
+    try:
+        delete_parameter_definition(param_def_id)
+        return JsonResponse({"ok": True})
+    except Exception as e:
+        return _json_error(str(e))
+
+"Создать измерение (unit_dimension) – нельзя дублировать имя"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_unit_dimension(request):
+    try:
+        payload = _parse_json(request)
+        ud = create_unit_dimension(payload.get("name"))
+        return JsonResponse({"ok": True, "data": _serialize_unit_dimension(ud)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить измерение (unit_dimension) по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_unit_dimension(request, dimension_id):
+    try:
+        delete_unit_dimension(dimension_id)
+        return JsonResponse({"ok": True})
+    except Exception as e:
+        return _json_error(str(e))
+
+"Создать единицу измерения (unit)"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_unit(request):
+    try:
+        payload = _parse_json(request)
+        unit = create_unit(
+            dimension_id=payload.get("dimension_id"),
+            name=payload.get("name"),
+            symbol=payload.get("symbol"),
+            to_base_factor=payload.get("to_base_factor", 1),
+            to_base_offset=payload.get("to_base_offset", 0),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_unit(unit)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить единицу измерения (unit) по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_unit(request, unit_id):
+    try:
+        delete_unit(unit_id)
+        return JsonResponse({"ok": True})
+    except Exception as e:
+        return _json_error(str(e))
+
+"Создать значение параметра для товара (product_parameter_value), поддержка строковых, числовых и enum"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_product_parameter_value(request):
+    try:
+        payload = _parse_json(request)
+
+        value_int = payload.get("value_int")
+        value_real = payload.get("value_real")
+        value_enum_id = payload.get("value_enum_id")
+
+        if value_int in ("", None):
+            value_int = None
+        else:
+            value_int = int(value_int)
+        if value_real in ("", None):
+            value_real = None
+        else:
+            value_real = float(value_real)
+        if value_enum_id in ("", None):
+            value_enum_id = None
+        else:
+            value_enum_id = int(value_enum_id)
+
+        ppv = create_product_parameter_value(
+            product_id=payload.get("product_id"),
+            parameter_definition_id=payload.get("parameter_definition_id"),
+            value_str=payload.get("value_str"),
+            value_int=value_int,
+            value_real=value_real,
+            value_enum_id=value_enum_id,   # передаём в сервис
+        )
+        return JsonResponse({"ok": True, "data": _serialize_product_parameter_value(ppv)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Обновить значение параметра для товара (product_parameter_value) по id"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_product_parameter_value(request):
+    try:
+        payload = _parse_json(request)
+
+        value_int = payload.get("value_int")
+        value_real = payload.get("value_real")
+        value_enum_id = payload.get("value_enum_id")
+        if value_int in ("", None):
+            value_int = None
+        else:
+            value_int = int(value_int)
+        if value_real in ("", None):
+            value_real = None
+        else:
+            value_real = float(value_real)
+        if value_enum_id in ("", None):
+            value_enum_id = None
+        else:
+            value_enum_id = int(value_enum_id)
+
+        ppv = update_product_parameter_value(
+            product_parameter_value_id=payload.get("product_parameter_value_id"),
+            value_str=payload.get("value_str"),
+            value_int=value_int,
+            value_real=value_real,
+            value_enum_id=value_enum_id,
+        )
+        return JsonResponse({"ok": True, "data": _serialize_product_parameter_value(ppv)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить значение параметра для товара (product_parameter_value) по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_product_parameter_value(request, ppv_id):
+    try:
+        delete_product_parameter_value(ppv_id)
+        return JsonResponse({"ok": True})
+    except Exception as e:
+        return _json_error(str(e))
+
+"Получить все товары по категории с выводом всех их параметров и атрибутов"
+@require_http_methods(["GET"])
+def api_products_with_params(request, category_id):   # параметр category_id, не classifier_node_id
+    result = find_products_with_params_and_attrs(category_id)
+    data = [{"product": _serialize_product(item["product"]),
+             "parameters": item["parameters"],
+             "attributes": item["attributes"]} for item in result]
+    return JsonResponse({"ok": True, "data": data})
+
+"""Фильтрация товаров по значениям параметров C УЧЁТОМ категории (category_id).
+    filters = [{"parameter_definition_id": 10, "value_int": 1}, ...]
+    Поддержка фильтров с min/max через operator (gte/lte) при необходимости.
+"""
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_filter_products_by_params(request, category_id):
+    try:
+        payload = _parse_json(request)
+        filters = payload.get("filters", [])
+
+        # Преобразуем диапазон в два условий по одному параметру.
+        expanded_filters = []
+        for f in filters:
+            if "min" in f or "max" in f:
+                if "min" in f:
+                    value_key = "value_int" if "value_int" in f else "value_real"
+                    expanded_filters.append({
+                        "parameter_definition_id": f["parameter_definition_id"],
+                        "operator": "gte",
+                        value_key: f["min"]
+                    })
+                if "max" in f:
+                    value_key = "value_int" if "value_int" in f else "value_real"
+                    expanded_filters.append({
+                        "parameter_definition_id": f["parameter_definition_id"],
+                        "operator": "lte",
+                        value_key: f["max"]
+                    })
+            else:
+                # Обычный фильтр с operator
+                expanded_filters.append(f)
+
+        products = filter_products_by_parameters(category_id, expanded_filters)
+        return JsonResponse({"ok": True, "data": [_serialize_product(p) for p in products]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Фильтрация товаров по значениям параметров без учета категории (аналогична фильтрации с category, но по всем товарам сразу)"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_filter_products_by_params_no_class(request):
+    try:
+        payload = _parse_json(request)
+        filters = payload.get("filters", [])
+        products = filter_products_by_parameters_without_class(filters)
+        return JsonResponse({"ok": True, "data": [_serialize_product(p) for p in products]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ========== ОГРАНИЧЕНИЯ ДЛЯ ЧИСЛОВЫХ ПАРАМЕТРОВ ==========
+
+"Получить ограничение (min/max) для числового параметра (parameter_definition_id)"
+@require_http_methods(["GET"])
+@csrf_exempt
+def api_get_parameter_constraint(request, param_def_id):
+    try:
+        pd = ParameterDefinition.objects.get(id=param_def_id)
+        if pd.value_type not in ('int', 'real'):
+            return _json_error("Ограничения только для числовых параметров")
+    except ParameterDefinition.DoesNotExist:
+        return _json_error("Параметр не найден", 404)
+
+    try:
+        c = ParameterNumericConstraint.objects.get(parameter_definition_id=param_def_id)
+        return JsonResponse({"ok": True, "data": {"min_value": float(c.min_value), "max_value": float(c.max_value)}})
+    except ParameterNumericConstraint.DoesNotExist:
+        return JsonResponse({"ok": True, "data": None})
+
+"Создать ограничение (min/max) для числового параметра (parameter_definition_id)"
+@require_http_methods(["POST"])
+@csrf_exempt
+def api_create_parameter_constraint(request):
+    """
+    Создать ограничение для параметра.
+    Ожидает JSON:
+    {
+        "parameter_definition_id": 123,
+        "min_value": 10.5,
+        "max_value": 100.0
+    }
+    """
+    try:
+        payload = _parse_json(request)
+        param_def_id = payload.get("parameter_definition_id")
+        min_val = payload.get("min_value")
+        max_val = payload.get("max_value")
+
+        if not param_def_id:
+            return _json_error("parameter_definition_id обязателен")
+        if min_val is None or max_val is None:
+            return _json_error("Необходимы min_value и max_value")
+
+        # Проверка существования параметра и его типа
+        try:
+            pd = ParameterDefinition.objects.get(id=param_def_id)
+            if pd.value_type not in ('int', 'real'):
+                return _json_error("Ограничения можно задавать только для числовых параметров")
+        except ParameterDefinition.DoesNotExist:
+            return _json_error("Параметр не найден", 404)
+
+        min_val = float(min_val)
+        max_val = float(max_val)
+        if min_val > max_val:
+            return _json_error("min_value не может быть больше max_value")
+
+        # Проверяем, нет ли уже ограничения (чтобы случайно не перезаписать)
+        if ParameterNumericConstraint.objects.filter(parameter_definition_id=param_def_id).exists():
+            return _json_error("Ограничение уже существует. Используйте обновление.")
+
+        c = ParameterNumericConstraint.objects.create(
+            parameter_definition_id=param_def_id,
+            min_value=min_val,
+            max_value=max_val
+        )
+        return JsonResponse({
+            "ok": True,
+            "data": {
+                "min_value": float(c.min_value),
+                "max_value": float(c.max_value)
+            }
+        })
+    except Exception as e:
+        return _json_error(str(e))
+
+"Обновить существующее ограничение (min/max) для числового параметра (parameter_definition_id)"
+@require_http_methods(["POST"])
+@csrf_exempt
+def api_update_parameter_constraint(request):
+    """
+    Обновить существующее ограничение для параметра.
+    Ожидает JSON:
+    {
+        "parameter_definition_id": 123,
+        "min_value": 10.5,
+        "max_value": 100.0
+    }
+    """
+    try:
+        payload = _parse_json(request)
+        param_def_id = payload.get("parameter_definition_id")
+        min_val = payload.get("min_value")
+        max_val = payload.get("max_value")
+
+        if not param_def_id:
+            return _json_error("parameter_definition_id обязателен")
+        if min_val is None or max_val is None:
+            return _json_error("Необходимы min_value и max_value")
+
+        min_val = float(min_val)
+        max_val = float(max_val)
+        if min_val > max_val:
+            return _json_error("min_value не может быть больше max_value")
+
+        c = ParameterNumericConstraint.objects.get(parameter_definition_id=param_def_id)
+        c.min_value = min_val
+        c.max_value = max_val
+        c.save()
+
+        return JsonResponse({
+            "ok": True,
+            "data": {
+                "min_value": float(c.min_value),
+                "max_value": float(c.max_value)
+            }
+        })
+    except ParameterNumericConstraint.DoesNotExist:
+        return _json_error("Ограничение не найдено", 404)
+    except Exception as e:
+        return _json_error(str(e))
+
+"Удалить ограничение (min/max) для числового параметра (parameter_definition_id)"
+@require_http_methods(["DELETE"])
+@csrf_exempt
+def api_delete_parameter_constraint(request, param_def_id):
+    try:
+        c = ParameterNumericConstraint.objects.get(parameter_definition_id=param_def_id)
+        c.delete()
+        return JsonResponse({"ok": True, "message": "Ограничение удалено"})
+    except ParameterNumericConstraint.DoesNotExist:
+        return JsonResponse({"ok": True, "message": "Ограничение не существовало"})
+
+# ========== ЧТЕНИЕ ЗНАЧЕНИЙ ПАРАМЕТРОВ ПРОДУКТОВ ==========
+
+"Получить все значения параметров (product_parameter_value) для товара по его id"
+@require_http_methods(["GET"])
+def api_product_parameter_values(request, product_id):
+    """Возвращает все значения параметров для данного продукта."""
+    ppvs = ProductParameterValue.objects.filter(product_id=product_id).select_related('parameter_definition')
+    data = [_serialize_product_parameter_value(p) for p in ppvs]
+    return JsonResponse({"ok": True, "data": data})
+
+"Получить значение одного параметра для товара (product), по product_id и param_def_id"
+@require_http_methods(["GET"])
+def api_get_parameter_value(request, product_id, param_def_id):
+    """Возвращает значение конкретного параметра для продукта (или null)."""
+    try:
+        ppv = ProductParameterValue.objects.get(product_id=product_id, parameter_definition_id=param_def_id)
+        return JsonResponse({"ok": True, "data": _serialize_product_parameter_value(ppv)})
+    except ProductParameterValue.DoesNotExist:
+        return JsonResponse({"ok": True, "data": None})
+
+# ========== АГРЕГАТЫ ПАРАМЕТРОВ ==========
+
+"Получить агрегаты по параметрам из mv_parameter_aggregates (среднее, мин, макс и т.д.), фильтрация по категории через ?category_id="
+@require_http_methods(["GET"])
+def api_parameter_aggregates(request):
+    """
+    Возвращает агрегаты из материализованного представления mv_parameter_aggregates.
+    Можно фильтровать по category_id (classifier_node_id) через параметр ?category_id=...
+    """
+    category_id = request.GET.get("category_id")
+    try:
+        with connection.cursor() as cursor:
+            sql = """
+                SELECT
+                    classifier_node_id,
+                    parameter_definition_id,
+                    param_name,
+                    value_type,
+                    total_products,
+                    filled_count,
+                    avg_numeric,
+                    min_numeric,
+                    max_numeric,
+                    sum_numeric
+                FROM mv_parameter_aggregates
+            """
+            params = []
+            if category_id:
+                sql += " WHERE classifier_node_id = %s"
+                params.append(int(category_id))
+            sql += " ORDER BY classifier_node_id, param_name"
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+        data = [
+            {
+                "category_id": r[0],
+                "parameter_definition_id": r[1],
+                "param_name": r[2],
+                "value_type": r[3],
+                "total_products": r[4],
+                "filled_count": r[5],
+                "avg_numeric": float(r[6]) if r[6] is not None else None,
+                "min_numeric": float(r[7]) if r[7] is not None else None,
+                "max_numeric": float(r[8]) if r[8] is not None else None,
+                "sum_numeric": float(r[9]) if r[9] is not None else None,
+            }
+            for r in rows
+        ]
+        return JsonResponse({"ok": True, "data": data})
+    except Exception as e:
+        return _json_error(str(e))
+
+"Обновить агрегаты (REFRESH MATERIALIZED VIEW mv_parameter_aggregates)"
+@require_http_methods(["POST"])
+@csrf_exempt
+def api_refresh_aggregates(request):
+    """Обновляет материализованное представление агрегатов."""
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_parameter_aggregates")
+        return JsonResponse({"ok": True, "message": "Агрегаты обновлены"})
+    except Exception as e:
+        return _json_error(str(e))
+
+"Получить список всех размерностей измерения (unit_dimension)"
+@require_http_methods(["GET"])
+def api_unit_dimensions(request):
+    """Список всех размерностей."""
+    dimensions = UnitDimension.objects.all().order_by('name')
+    data = [_serialize_unit_dimension(d) for d in dimensions]
+    return JsonResponse({"ok": True, "data": data})
+
+"Получить одну размерность (unit_dimension) по id"
+@require_http_methods(["GET"])
+def api_unit_dimension_detail(request, dimension_id):
+    """Получить одну размерность по id."""
+    try:
+        dim = UnitDimension.objects.get(id=dimension_id)
+        return JsonResponse({"ok": True, "data": _serialize_unit_dimension(dim)})
+    except UnitDimension.DoesNotExist:
+        return _json_error("Размерность не найдена", 404)
+
+"Обновить название размерности (unit_dimension)"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_unit_dimension(request):
+    """Обновить название размерности."""
+    try:
+        payload = _parse_json(request)
+        dim_id = payload.get("unit_dimension_id")
+        new_name = payload.get("name", "").strip()
+        if not dim_id or not new_name:
+            return _json_error("unit_dimension_id и name обязательны")
+        dim = UnitDimension.objects.get(id=dim_id)
+        dim.name = new_name
+        dim.save()
+        return JsonResponse({"ok": True, "data": _serialize_unit_dimension(dim)})
+    except UnitDimension.DoesNotExist:
+        return _json_error("Размерность не найдена", 404)
+    except Exception as e:
+        return _json_error(str(e))
+
+"Получить список всех единиц измерения (unit), вместе с размерностью"
+@require_http_methods(["GET"])
+def api_units(request):
+    """Список всех единиц измерения (с присоединённой размерностью)."""
+    units = Unit.objects.select_related('dimension').all().order_by('dimension__name', 'name')
+    data = [_serialize_unit(u) for u in units]
+    return JsonResponse({"ok": True, "data": data})
+
+"Получить одну единицу измерения (unit) по id"
+@require_http_methods(["GET"])
+def api_unit_detail(request, unit_id):
+    """Получить одну единицу по id."""
+    try:
+        unit = Unit.objects.select_related('dimension').get(id=unit_id)
+        return JsonResponse({"ok": True, "data": _serialize_unit(unit)})
+    except Unit.DoesNotExist:
+        return _json_error("Единица не найдена", 404)
+
+"Получить все единицы измерения (unit), принадлежащие указанной размерности (dimension_id)"
+@require_http_methods(["GET"])
+def api_units_by_dimension(request, dimension_id):
+    """Список единиц, принадлежащих указанной размерности."""
+    units = Unit.objects.filter(dimension_id=dimension_id).select_related('dimension').order_by('name')
+    data = [_serialize_unit(u) for u in units]
+    return JsonResponse({"ok": True, "data": data})
+
+"Обновить поля (имя, символ, коэффициенты, размерность) для единицы измерения (unit)"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_unit(request):
+    """Обновить поля единицы измерения."""
+    try:
+        payload = _parse_json(request)
+        unit_id = payload.get("unit_id")
+        if not unit_id:
+            return _json_error("unit_id обязателен")
+        unit = Unit.objects.get(id=unit_id)
+        if "name" in payload:
+            unit.name = payload["name"].strip()
+        if "symbol" in payload:
+            unit.symbol = payload["symbol"].strip()
+        if "to_base_factor" in payload:
+            unit.to_base_factor = payload["to_base_factor"]
+        if "to_base_offset" in payload:
+            unit.to_base_offset = payload["to_base_offset"]
+        if "dimension_id" in payload:
+            unit.dimension_id = payload["dimension_id"]
+        unit.save()
+        return JsonResponse({"ok": True, "data": _serialize_unit(unit)})
+    except Unit.DoesNotExist:
+        return _json_error("Единица не найдена", 404)
+    except Exception as e:
+        return _json_error(str(e))
+
+# ========== HELPER ==========
+"Получить все допустимые типы значений параметров (для фронта)"
+@require_http_methods(["GET"])
+def api_parameter_value_types(request):
+    """Возвращает список допустимых типов значений параметров."""
+    types = [{'value': 'str', 'label': 'Строка'},
+             {'value': 'int', 'label': 'Целое число'},
+             {'value': 'real', 'label': 'Вещественное число'},
+             {'value': 'enum', 'label': 'Перечисление'}]
+    return JsonResponse({"ok": True, "data": types})
+
+# ========== СПЕЦИФИКАЦИЯ (BOM) ==========
+
+def _serialize_db_row(row):
+    return {k: float(v) if isinstance(v, Decimal) else v for k, v in row.items()}
+
+def _serialize_bom_change(change):
+    return {
+        "id": change.id,
+        "product_id": change.product_id,
+        "change_no": change.change_no,
+        "description": change.description,
+        "author": change.author,
+        "created_at": change.created_at.isoformat() if change.created_at else None,
+    }
+
+
+"Строка состава из модели BomItem. Изделие и ЕИ нужны для названия и символа — их берём запросами"
+def _serialize_bom_item(item):
+    component = Product.objects.filter(id=item.component_id).first()
+    unit = Unit.objects.filter(id=item.unit_id).first()
+    return {
+        "id": item.id,
+        "parent_product_id": item.parent_product_id,
+        "component_id": item.component_id,
+        "component_name": component.name if component else None,
+        "component_designation": component.designation if component else None,
+        "product_type_code": component.product_type_id if component else None,
+        "position_no": item.position_no,
+        "quantity": float(item.quantity) if item.quantity is not None else None,
+        "per_quantity": float(item.per_quantity) if item.per_quantity is not None else None,
+        "unit_id": item.unit_id,
+        "unit_symbol": unit.symbol if unit else None,
+        "is_base": bool(item.is_base),
+    }
+
+"Строка эффектного состава из bom_effective: названия и символы уже в самой строке, доп. запросов нет"
+def _serialize_bom_row(row):
+    return {
+        "id": row["id"],
+        "parent_product_id": row["parent_product_id"],
+        "component_id": row["component_id"],
+        "component_name": row["component_name"],
+        "component_designation": row["component_designation"],
+        "product_type_code": row["product_type_code"],
+        "position_no": row["position_no"],
+        "quantity": float(row["quantity"]) if row["quantity"] is not None else None,
+        "per_quantity": float(row["per_quantity"]) if row["per_quantity"] is not None else None,
+        "unit_id": row["unit_id"],
+        "unit_symbol": row["unit_symbol"],
+        "is_base": bool(row["is_base"]),
+    }
+
+"Список строк состава изделия для редактора"
+@require_http_methods(["GET"])
+def api_bom_items(request, product_id):
+    try:
+        rows = list_bom_items(product_id)
+        return JsonResponse({"ok": True, "data": [_serialize_bom_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Добавить строку состава изделия. Изменение регистрируется сервисом в той же транзакции"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_bom_item(request):
+    try:
+        payload = _parse_json(request)
+        row = create_bom_item(
+            parent_product_id=payload.get("parent_product_id"),
+            component_id=payload.get("component_id"),
+            quantity=payload.get("quantity"),
+            per_quantity=payload.get("per_quantity", 1),
+            unit_id=payload.get("unit_id"),
+            position_no=payload.get("position_no"),
+            is_base=payload.get("is_base", False),
+            author=request.user.get_username(),
+            change_description=payload.get("change_description"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_bom_item(row)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Редактировать строку состава изделия. Изменение регистрируется сервисом в той же транзакции"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_bom_item(request):
+    try:
+        payload = _parse_json(request)
+        row = update_bom_item(
+            bom_item_id=payload.get("bom_item_id"),
+            quantity=payload.get("quantity"),
+            per_quantity=payload.get("per_quantity"),
+            unit_id=payload.get("unit_id"),
+            position_no=payload.get("position_no"),
+            is_base=payload.get("is_base"),
+            author=request.user.get_username(),
+            change_description=payload.get("change_description"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_bom_item(row)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить строку состава изделия. Изменение регистрируется сервисом в той же транзакции"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_bom_item(request, bom_item_id):
+    try:
+        payload = _parse_json(request) if request.body else {}
+        delete_bom_item(
+            bom_item_id,
+            author=request.user.get_username(),
+            change_description=payload.get("change_description"),
+        )
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Дерево состава изделия на всю глубину (find_bom)"
+@require_http_methods(["GET"])
+def api_bom_tree(request, product_id):
+    try:
+        rows = find_bom(product_id)
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Сводные нормы расхода (calc_bom). ?quantity=1000&class_id=22 - class_id необязателен"
+@require_http_methods(["GET"])
+def api_bom_calc(request, product_id):
+    try:
+        class_id = request.GET.get("class_id") or None
+        rows = calc_bom(product_id, request.GET.get("quantity", 1), class_id)
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Классы, в которых у изделия есть ресурсы: для выбора в расчёте потребности"
+@require_http_methods(["GET"])
+def api_bom_calc_classes(request, product_id):
+    try:
+        rows = calc_bom_classes(product_id, request.GET.get("quantity", 1))
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Сводные нормы расхода по классам ресурсов (calc_bom_by_class). ?quantity=1000"
+@require_http_methods(["GET"])
+def api_bom_calc_by_class(request, product_id):
+    try:
+        rows = calc_bom_by_class(product_id, request.GET.get("quantity", 1))
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Создать модификацию изделия. {base_product_id, name, designation}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_modification(request):
+    try:
+        payload = _parse_json(request)
+        product = create_modification(
+            base_product_id=payload.get("base_product_id"),
+            name=payload.get("name"),
+            designation=payload.get("designation"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_product(product)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Зарегистрировать изменение спецификации изделия. {product_id, description}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_register_change(request):
+    try:
+        payload = _parse_json(request)
+        change = register_change(
+            payload.get("product_id"),
+            payload.get("description"),
+            author=request.user.get_username(),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_bom_change(change)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"История изменений спецификации изделия"
+@require_http_methods(["GET"])
+def api_bom_changes(request, product_id):
+    try:
+        changes = get_bom_changes(product_id)
+        return JsonResponse({"ok": True, "data": [_serialize_bom_change(c) for c in changes]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Журнал правок состава изделия, сначала свежие"
+@require_http_methods(["GET"])
+def api_bom_change_log(request, product_id):
+    try:
+        rows = get_bom_change_log(product_id)
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+########################################################################################################################
+"справочники техпроцесса"
+########################################################################################################################
+from django.db import transaction
+from core.models import OperationClass, WorkCenterGroup, Profession, Tooling
+from .service import (
+    get_operation_class_tree, create_operation_class, update_operation_class,
+    move_operation_class, delete_operation_class,
+    get_work_center_group_tree, create_work_center_group, update_work_center_group,
+    move_work_center_group, delete_work_center_group,
+    get_all_professions, create_profession, update_profession, delete_profession,
+    get_all_tooling, create_tooling, update_tooling, delete_tooling,
+)
+
+def _serialize_tree_node(n):
+    return {
+        "id": n.id,
+        "name": n.name,
+        "parent_id": n.parent_id,
+        "level": getattr(n, "level", 0),
+        "sort_order": n.sort_order,
+    }
+
+def _serialize_profession(p):
+    return {
+        "id": p.id,
+        "name": p.name,
+        "grade": p.grade,
+        "hourly_rate": float(p.hourly_rate),
+    }
+
+def _serialize_tooling(t):
+    return {
+        "id": t.id,
+        "designation": t.designation,
+        "name": t.name,
+        "tooling_type": t.tooling_type,
+    }
+
+"Обновление узла дерева-справочника: переименование и/или смена родителя одним запросом"
+def _update_tree_from_payload(model, update_fn, move_fn, id_key, payload):
+    node_id = payload.get(id_key)
+    if node_id in (None, ""):
+        raise ValueError(f"{id_key} обязателен")
+
+    node = model.objects.filter(id=int(node_id)).first()
+    if node is None:
+        raise ValueError("Запись не найдена")
+
+    with transaction.atomic():
+        if "name" in payload:
+            node = update_fn(node.id, payload.get("name"))
+        if "parent_id" in payload:
+            new_parent = payload.get("parent_id")
+            new_parent = None if new_parent in ("", None) else int(new_parent)
+            if new_parent != node.parent_id:
+                node = move_fn(node.id, new_parent)
+    return node
+
+# ---------- классы операций ----------
+
+"Получить дерево классов операций с уровнями вложенности"
+@require_http_methods(["GET"])
+def api_operation_classes(request):
+    return JsonResponse({"ok": True, "data": [_serialize_tree_node(n) for n in get_operation_class_tree()]})
+
+"Создать класс операций. {name, parent_id}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_operation_class(request):
+    try:
+        payload = _parse_json(request)
+        node = create_operation_class(payload.get("name"), payload.get("parent_id"))
+        return JsonResponse({"ok": True, "data": _serialize_tree_node(node)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Обновить класс операций (название и/или родителя). {operation_class_id, name, parent_id}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_operation_class(request):
+    try:
+        payload = _parse_json(request)
+        node = _update_tree_from_payload(OperationClass, update_operation_class, move_operation_class,
+                                         "operation_class_id", payload)
+        return JsonResponse({"ok": True, "data": _serialize_tree_node(node)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить класс операций по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_operation_class(request, operation_class_id):
+    try:
+        delete_operation_class(operation_class_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- группы рабочих центров (ГРЦ) ----------
+
+"Получить дерево групп рабочих центров с уровнями вложенности"
+@require_http_methods(["GET"])
+def api_work_center_groups(request):
+    return JsonResponse({"ok": True, "data": [_serialize_tree_node(n) for n in get_work_center_group_tree()]})
+
+"Создать группу рабочих центров. {name, parent_id}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_work_center_group(request):
+    try:
+        payload = _parse_json(request)
+        node = create_work_center_group(payload.get("name"), payload.get("parent_id"))
+        return JsonResponse({"ok": True, "data": _serialize_tree_node(node)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Обновить группу рабочих центров (название и/или родителя). {work_center_group_id, name, parent_id}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_work_center_group(request):
+    try:
+        payload = _parse_json(request)
+        node = _update_tree_from_payload(WorkCenterGroup, update_work_center_group, move_work_center_group,
+                                         "work_center_group_id", payload)
+        return JsonResponse({"ok": True, "data": _serialize_tree_node(node)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить группу рабочих центров по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_work_center_group(request, work_center_group_id):
+    try:
+        delete_work_center_group(work_center_group_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- профессии ----------
+
+"Получить все профессии"
+@require_http_methods(["GET"])
+def api_professions(request):
+    return JsonResponse({"ok": True, "data": [_serialize_profession(p) for p in get_all_professions()]})
+
+"Создать профессию. {name, grade, hourly_rate}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_profession(request):
+    try:
+        payload = _parse_json(request)
+        profession = create_profession(payload.get("name"), payload.get("grade"), payload.get("hourly_rate"))
+        return JsonResponse({"ok": True, "data": _serialize_profession(profession)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Обновить профессию. {profession_id, name, grade, hourly_rate}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_profession(request):
+    try:
+        payload = _parse_json(request)
+        profession = update_profession(
+            profession_id=payload.get("profession_id"),
+            name=payload.get("name"),
+            grade=payload.get("grade"),
+            hourly_rate=payload.get("hourly_rate"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_profession(profession)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить профессию по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_profession(request, profession_id):
+    try:
+        delete_profession(profession_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- инструмент и оснастка ----------
+
+"Получить весь инструмент и оснастку"
+@require_http_methods(["GET"])
+def api_tooling_list(request):
+    return JsonResponse({"ok": True, "data": [_serialize_tooling(t) for t in get_all_tooling()]})
+
+"Создать инструмент или оснастку. {designation, name, tooling_type}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_tooling(request):
+    try:
+        payload = _parse_json(request)
+        tooling = create_tooling(payload.get("designation"), payload.get("name"),
+                                 payload.get("tooling_type", "tool"))
+        return JsonResponse({"ok": True, "data": _serialize_tooling(tooling)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Обновить инструмент или оснастку. {tooling_id, designation, name, tooling_type}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_tooling(request):
+    try:
+        payload = _parse_json(request)
+        tooling = update_tooling(
+            tooling_id=payload.get("tooling_id"),
+            designation=payload.get("designation"),
+            name=payload.get("name"),
+            tooling_type=payload.get("tooling_type"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_tooling(tooling)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить инструмент или оснастку по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_tooling(request, tooling_id):
+    try:
+        delete_tooling(tooling_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+
+########################################################################################################################
+"маршрутная технология"
+########################################################################################################################
+
+
+def _serialize_route(r):
+    return {
+        "id": r.id,
+        "product_id": r.product_id,
+        "product_name": r.product.name,
+        "product_designation": r.product.designation,
+        "route_no": r.route_no,
+        "name": r.name,
+    }
+
+def _serialize_route_operation(o):
+    return {
+        "id": o.id,
+        "route_id": o.route_id,
+        "position_no": o.position_no,
+        "name": o.name,
+        "operation_class_id": o.operation_class_id,
+        "work_center_group_id": o.work_center_group_id,
+        "profession_id": o.profession_id,
+        "time_norm": float(o.time_norm),
+        "time_unit_id": o.time_unit_id,
+    }
+
+def _serialize_operation_tool(t):
+    return {
+        "id": t.id,
+        "route_operation_id": t.route_operation_id,
+        "tooling_id": t.tooling_id,
+        "quantity": t.quantity,
+    }
+
+def _serialize_operation_material(m):
+    return {
+        "id": m.id,
+        "route_operation_id": m.route_operation_id,
+        "product_id": m.product_id,
+        "quantity": float(m.quantity),
+        "per_quantity": float(m.per_quantity),
+        "unit_id": m.unit_id,
+    }
+
+# ---------- маршруты ----------
+
+"Изделия, для которых можно создать маршрут (изготавливаемые), с количеством уже созданных маршрутов"
+@require_http_methods(["GET"])
+def api_routable_products(request):
+    try:
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in get_routable_products()]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Список маршрутов. ?product_id=15 - только маршруты этого изделия"
+@require_http_methods(["GET"])
+def api_routes(request):
+    try:
+        routes = get_routes(request.GET.get("product_id"))
+        return JsonResponse({"ok": True, "data": [_serialize_route(r) for r in routes]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Маршрут целиком: операции по порядку, у каждой ГРЦ, профессия, время, инструмент и материалы"
+@require_http_methods(["GET"])
+def api_route_details(request, route_id):
+    try:
+        return JsonResponse({"ok": True, "data": get_route_details(route_id)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Создать маршрут изделия. {product_id, name, route_no}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_route(request):
+    try:
+        payload = _parse_json(request)
+        route = create_route(payload.get("product_id"), payload.get("name"), payload.get("route_no"))
+        return JsonResponse({"ok": True, "data": _serialize_route(route)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Переименовать маршрут. {route_id, name}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_route(request):
+    try:
+        payload = _parse_json(request)
+        route = update_route(payload.get("route_id"), payload.get("name"))
+        return JsonResponse({"ok": True, "data": _serialize_route(route)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить маршрут вместе с операциями"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_route(request, route_id):
+    try:
+        delete_route(route_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- операции маршрута ----------
+
+"""Добавить операцию в маршрут.
+    {route_id, name, operation_class_id, work_center_group_id, profession_id, time_norm, time_unit_id, position_no}"""
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_route_operation(request):
+    try:
+        payload = _parse_json(request)
+        operation = create_route_operation(
+            route_id=payload.get("route_id"),
+            name=payload.get("name"),
+            operation_class_id=payload.get("operation_class_id"),
+            work_center_group_id=payload.get("work_center_group_id"),
+            profession_id=payload.get("profession_id"),
+            time_norm=payload.get("time_norm"),
+            time_unit_id=payload.get("time_unit_id"),
+            position_no=payload.get("position_no"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_route_operation(operation)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Изменить операцию маршрута. {operation_id, name, operation_class_id, work_center_group_id, profession_id, time_norm, time_unit_id, position_no}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_route_operation(request):
+    try:
+        payload = _parse_json(request)
+        operation = update_route_operation(
+            operation_id=payload.get("operation_id"),
+            name=payload.get("name"),
+            operation_class_id=payload.get("operation_class_id"),
+            work_center_group_id=payload.get("work_center_group_id"),
+            profession_id=payload.get("profession_id"),
+            time_norm=payload.get("time_norm"),
+            time_unit_id=payload.get("time_unit_id"),
+            position_no=payload.get("position_no"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_route_operation(operation)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Переместить операцию на другую позицию. {operation_id, position_no}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_move_route_operation(request):
+    try:
+        payload = _parse_json(request)
+        operation = move_route_operation(payload.get("operation_id"), payload.get("position_no"))
+        return JsonResponse({"ok": True, "data": _serialize_route_operation(operation)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить операцию маршрута"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_route_operation(request, operation_id):
+    try:
+        delete_route_operation(operation_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- инструмент и оснастка операции ----------
+
+"Добавить инструмент в операцию. {operation_id, tooling_id, quantity}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_add_operation_tool(request):
+    try:
+        payload = _parse_json(request)
+        item = add_operation_tool(payload.get("operation_id"), payload.get("tooling_id"),
+                                  payload.get("quantity", 1))
+        return JsonResponse({"ok": True, "data": _serialize_operation_tool(item)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Изменить количество инструмента в операции. {operation_tool_id, quantity}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_operation_tool(request):
+    try:
+        payload = _parse_json(request)
+        item = update_operation_tool(payload.get("operation_tool_id"), payload.get("quantity"))
+        return JsonResponse({"ok": True, "data": _serialize_operation_tool(item)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Убрать инструмент из операции"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_operation_tool(request, operation_tool_id):
+    try:
+        delete_operation_tool(operation_tool_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- материалы и комплектующие операции ----------
+
+"Добавить материал в операцию. {operation_id, product_id, quantity, per_quantity, unit_id}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_add_operation_material(request):
+    try:
+        payload = _parse_json(request)
+        item = add_operation_material(
+            operation_id=payload.get("operation_id"),
+            product_id=payload.get("product_id"),
+            quantity=payload.get("quantity"),
+            per_quantity=payload.get("per_quantity", 1),
+            unit_id=payload.get("unit_id"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_operation_material(item)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Изменить норму расхода материала в операции. {operation_material_id, quantity, per_quantity, unit_id}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_operation_material(request):
+    try:
+        payload = _parse_json(request)
+        item = update_operation_material(
+            operation_material_id=payload.get("operation_material_id"),
+            quantity=payload.get("quantity"),
+            per_quantity=payload.get("per_quantity"),
+            unit_id=payload.get("unit_id"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_operation_material(item)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Убрать материал из операции"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_operation_material(request, operation_material_id):
+    try:
+        delete_operation_material(operation_material_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+########################################################################################################################
+"технология: анализ, нормы, калькуляция"
+########################################################################################################################
+
+"Анализ технологичности: все операции маршрутов изделия и его компонентов"
+@require_http_methods(["GET"])
+def api_technology_routes(request, product_id):
+    try:
+        rows = find_route_deep(product_id)
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Потребность в трудовых ресурсах. ?quantity=1000"
+@require_http_methods(["GET"])
+def api_technology_labor(request, product_id):
+    try:
+        rows = calc_labor(product_id, request.GET.get("quantity", 1))
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Калькуляция себестоимости. ?quantity=1000"
+@require_http_methods(["GET"])
+def api_technology_cost(request, product_id):
+    try:
+        row = calc_cost(product_id, request.GET.get("quantity", 1))
+        return JsonResponse({"ok": True, "data": _serialize_db_row(row)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))

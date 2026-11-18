@@ -1,0 +1,38 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Вход — Классификатор изделий</title>
+    <link rel="stylesheet" href="{% static 'css/style.css' %}?v=202611081010">
+</head>
+<body class="auth-body">
+    <main class="auth-card">
+        <div class="auth-brand">
+            <span class="auth-logo">К</span>
+            <div>
+                <h1>Классификатор изделий</h1>
+                <p class="auth-subtitle">Вход в систему</p>
+            </div>
+        </div>
+
+        {% if form.non_field_errors %}
+            <p class="auth-error">{{ form.non_field_errors|striptags }}</p>
+        {% endif %}
+
+        <form method="post" class="auth-form" novalidate>
+            {% csrf_token %}
+            <div class="auth-field">
+                {% include '_auth_field.html' with field=form.username label='Логин' %}
+            </div>
+            <div class="auth-field">
+                {% include '_auth_field.html' with field=form.password label='Пароль' %}
+            </div>
+            <button type="submit" class="auth-submit">Войти</button>
+        </form>
+
+        <p class="auth-switch">Нет аккаунта? <a href="{% url 'register' %}">Зарегистрироваться</a></p>
+    </main>
+</body>
+</html>

@@ -1,0 +1,135 @@
+from django.urls import path
+from . import api_views
+
+####################### классификатор (categories) ###########################
+urlpatterns = [
+    path('tree/', api_views.api_tree, name='api_tree'),
+    path('categories/', api_views.api_categories, name='api_categories'),
+    path('categories/add/', api_views.api_add_category, name='api_add_category'),
+    path('categories/move/', api_views.api_move_category, name='api_move_category'),
+    path('categories/reorder/', api_views.api_reorder_category, name='api_reorder_category'),
+    path('categories/move-metadata/', api_views.api_nodes_move_metadata, name='api_nodes_move_metadata'),
+    path('categories/<int:category_id>/', api_views.api_category, name='api_category'),
+    path('categories/<int:category_id>/products/', api_views.api_category_products, name='api_category_products'),
+    path('categories/<int:category_id>/children/', api_views.api_get_children, name='api_get_children'),
+    path('categories/<int:category_id>/parents/', api_views.api_get_parents, name='api_get_parents'),
+    path('categories/<int:category_id>/terminals/', api_views.api_get_terminals, name='api_get_terminals'),
+    path('categories/delete/', api_views.api_delete_category, name='api_delete_category'),
+    path('products/delete/', api_views.api_delete_product, name='api_delete_product'),
+    path('products/', api_views.api_products, name='api_products'),
+    path('products/add/', api_views.api_add_product, name='api_add_product'),
+    path('products/update/', api_views.api_update_product, name='api_update_product'),
+    path('products/<int:product_id>/', api_views.api_product, name='api_product'),
+
+###################################### enums ##########################################
+    path('enums/', api_views.api_enums_all, name='api_enums_all'),
+    path('enums/<int:enum_definition_id>/', api_views.api_enum_definition, name='api_enum_definition'),
+    path('enums/create/', api_views.api_create_enum_definition, name='api_create_enum_definition'),
+    path('enums/update/', api_views.api_update_enum_definition, name='api_update_enum_definition'),
+    path('enums/for-class-tree/<int:classifier_node_id>/', api_views.api_enums_for_class_tree, name='api_enums_for_class_tree'),
+    path('enum-values/add/', api_views.api_add_enum_value, name='api_add_enum_value'),
+    path('enum-values/delete/', api_views.api_delete_enum_value, name='api_delete_enum_value'),
+    path('enum-values/update/', api_views.api_update_enum_value, name='api_update_enum_value'),
+    path('enum-values/reorder/', api_views.api_reorder_enum_value, name='api_reorder_enum_value'),
+    path('enum-definitions/delete/', api_views.api_delete_enum_definition, name='api_delete_enum_definition'),
+    path('product-attributes/', api_views.api_product_attribute_values, name='api_product_attribute_values'),
+    path('product-attributes/assign/', api_views.api_assign_enum_value_to_product, name='api_assign_enum_value_to_product'),
+    path("product/<int:product_id>/enums/", api_views.api_product_enums, name="api_product_enums"),
+    path("product-attributes/update/", api_views.api_update_product_attribute, name="api_update_product_attribute"),
+    path("product-attributes/delete", api_views.api_delete_product_attribute, name="api_delete_product_attribute"),
+
+######################## параметры (parameters) ##################################
+    path('parameters/', api_views.api_parameters, name='api_parameters'),
+    path('parameters/for-category/<int:category_id>/', api_views.api_parameters_for_category, name='api_parameters_for_category'),
+    path('parameters/create/', api_views.api_create_parameter, name='api_create_parameter'),
+    path('parameters/update/', api_views.api_update_parameter, name='api_update_parameter'),
+    path('parameters/<int:param_def_id>/delete/', api_views.api_delete_parameter, name='api_delete_parameter'),
+    path('parameters/<int:param_def_id>/constraint/', api_views.api_get_parameter_constraint, name='api_get_parameter_constraint'),
+    path('parameter-constraint/create/', api_views.api_create_parameter_constraint, name='api_create_parameter_constraint'),
+    path('parameter-constraint/update/', api_views.api_update_parameter_constraint, name='api_update_parameter_constraint'),
+    path('parameters/<int:param_def_id>/constraint/delete/', api_views.api_delete_parameter_constraint,name='api_delete_parameter_constraint'),
+    path('unit-dimensions/create/', api_views.api_create_unit_dimension, name='api_create_unit_dimension'),
+    path('unit-dimensions/<int:dimension_id>/delete/', api_views.api_delete_unit_dimension, name='api_delete_unit_dimension'),
+    path('unit-dimensions/', api_views.api_unit_dimensions, name='api_unit_dimensions'),
+    path('unit-dimensions/<int:dimension_id>/', api_views.api_unit_dimension_detail, name='api_unit_dimension_detail'),
+    path('unit-dimensions/update/', api_views.api_update_unit_dimension, name='api_update_unit_dimension'),
+    path('units/', api_views.api_units, name='api_units'),
+    path('units/<int:unit_id>/', api_views.api_unit_detail, name='api_unit_detail'),
+    path('units/by-dimension/<int:dimension_id>/', api_views.api_units_by_dimension, name='api_units_by_dimension'),
+    path('units/update/', api_views.api_update_unit, name='api_update_unit'),
+    path('units/create/', api_views.api_create_unit, name='api_create_unit'),
+    path('units/<int:unit_id>/delete/', api_views.api_delete_unit, name='api_delete_unit'),
+    path('product-parameters/create/', api_views.api_create_product_parameter_value, name='api_create_product_parameter_value'),
+    path('product-parameters/update/', api_views.api_update_product_parameter_value, name='api_update_product_parameter_value'),
+    path('product-parameters/<int:ppv_id>/delete/', api_views.api_delete_product_parameter_value, name='api_delete_product_parameter_value'),
+    path('products/<int:product_id>/parameter-values/', api_views.api_product_parameter_values, name='api_product_parameter_values'),
+    path('products/<int:product_id>/parameter-values/<int:param_def_id>/', api_views.api_get_parameter_value, name='api_get_parameter_value'),
+    path('products/for-category/<int:category_id>/with-params/', api_views.api_products_with_params, name='api_products_with_params'),
+    path('products/for-category/<int:category_id>/filter/', api_views.api_filter_products_by_params, name='api_filter_products_by_params'),
+    path('aggregates/parameter-aggregates/', api_views.api_parameter_aggregates, name='api_parameter_aggregates'),
+    path('aggregates/refresh/', api_views.api_refresh_aggregates, name='api_refresh_aggregates'),
+    path('products/filter/', api_views.api_filter_products_by_params_no_class, name='api_filter_products_by_params_no_class'),
+
+######################## спецификация (BOM) ##################################
+    path('bom/<int:product_id>/items/', api_views.api_bom_items, name='api_bom_items'),
+    path('bom/items/create/', api_views.api_create_bom_item, name='api_create_bom_item'),
+    path('bom/items/update/', api_views.api_update_bom_item, name='api_update_bom_item'),
+    path('bom/items/<int:bom_item_id>/delete/', api_views.api_delete_bom_item, name='api_delete_bom_item'),
+    path('bom/<int:product_id>/tree/', api_views.api_bom_tree, name='api_bom_tree'),
+    path('bom/<int:product_id>/calc/', api_views.api_bom_calc, name='api_bom_calc'),
+    path('bom/<int:product_id>/calc-classes/', api_views.api_bom_calc_classes, name='api_bom_calc_classes'),
+    path('bom/<int:product_id>/calc-by-class/', api_views.api_bom_calc_by_class, name='api_bom_calc_by_class'),
+    path('bom/<int:product_id>/changes/', api_views.api_bom_changes, name='api_bom_changes'),
+    path('bom/<int:product_id>/change-log/', api_views.api_bom_change_log, name='api_bom_change_log'),
+    path('bom/modifications/create/', api_views.api_create_modification, name='api_create_modification'),
+    path('bom/changes/register/', api_views.api_register_change, name='api_register_change'),
+
+######################## справочники техпроцесса ##################################
+    path('operation-classes/', api_views.api_operation_classes, name='api_operation_classes'),
+    path('operation-classes/create/', api_views.api_create_operation_class, name='api_create_operation_class'),
+    path('operation-classes/update/', api_views.api_update_operation_class, name='api_update_operation_class'),
+    path('operation-classes/<int:operation_class_id>/delete/', api_views.api_delete_operation_class, name='api_delete_operation_class'),
+
+    path('work-center-groups/', api_views.api_work_center_groups, name='api_work_center_groups'),
+    path('work-center-groups/create/', api_views.api_create_work_center_group, name='api_create_work_center_group'),
+    path('work-center-groups/update/', api_views.api_update_work_center_group, name='api_update_work_center_group'),
+    path('work-center-groups/<int:work_center_group_id>/delete/', api_views.api_delete_work_center_group, name='api_delete_work_center_group'),
+
+    path('professions/', api_views.api_professions, name='api_professions'),
+    path('professions/create/', api_views.api_create_profession, name='api_create_profession'),
+    path('professions/update/', api_views.api_update_profession, name='api_update_profession'),
+    path('professions/<int:profession_id>/delete/', api_views.api_delete_profession, name='api_delete_profession'),
+
+    path('tooling/', api_views.api_tooling_list, name='api_tooling_list'),
+    path('tooling/create/', api_views.api_create_tooling, name='api_create_tooling'),
+    path('tooling/update/', api_views.api_update_tooling, name='api_update_tooling'),
+    path('tooling/<int:tooling_id>/delete/', api_views.api_delete_tooling, name='api_delete_tooling'),
+]
+
+######################## маршрутная технология ##################################
+urlpatterns += [
+    path('routes/products/', api_views.api_routable_products, name='api_routable_products'),
+    path('routes/', api_views.api_routes, name='api_routes'),
+    path('routes/create/', api_views.api_create_route, name='api_create_route'),
+    path('routes/update/', api_views.api_update_route, name='api_update_route'),
+    path('routes/<int:route_id>/', api_views.api_route_details, name='api_route_details'),
+    path('routes/<int:route_id>/delete/', api_views.api_delete_route, name='api_delete_route'),
+
+    path('route-operations/create/', api_views.api_create_route_operation, name='api_create_route_operation'),
+    path('route-operations/update/', api_views.api_update_route_operation, name='api_update_route_operation'),
+    path('route-operations/move/', api_views.api_move_route_operation, name='api_move_route_operation'),
+    path('route-operations/<int:operation_id>/delete/', api_views.api_delete_route_operation, name='api_delete_route_operation'),
+
+    path('route-operation-tools/add/', api_views.api_add_operation_tool, name='api_add_operation_tool'),
+    path('route-operation-tools/update/', api_views.api_update_operation_tool, name='api_update_operation_tool'),
+    path('route-operation-tools/<int:operation_tool_id>/delete/', api_views.api_delete_operation_tool, name='api_delete_operation_tool'),
+
+    path('route-operation-materials/add/', api_views.api_add_operation_material, name='api_add_operation_material'),
+    path('route-operation-materials/update/', api_views.api_update_operation_material, name='api_update_operation_material'),
+    path('route-operation-materials/<int:operation_material_id>/delete/', api_views.api_delete_operation_material, name='api_delete_operation_material'),
+    path('technology/<int:product_id>/routes/', api_views.api_technology_routes, name='api_technology_routes'),
+    path('technology/<int:product_id>/labor/', api_views.api_technology_labor, name='api_technology_labor'),
+    path('technology/<int:product_id>/cost/', api_views.api_technology_cost, name='api_technology_cost'),
+]
+
+
