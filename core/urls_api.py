@@ -83,4 +83,53 @@ urlpatterns = [
     path('bom/<int:product_id>/change-log/', api_views.api_bom_change_log, name='api_bom_change_log'),
     path('bom/modifications/create/', api_views.api_create_modification, name='api_create_modification'),
     path('bom/changes/register/', api_views.api_register_change, name='api_register_change'),
+
+######################## справочники техпроцесса ##################################
+    path('operation-classes/', api_views.api_operation_classes, name='api_operation_classes'),
+    path('operation-classes/create/', api_views.api_create_operation_class, name='api_create_operation_class'),
+    path('operation-classes/update/', api_views.api_update_operation_class, name='api_update_operation_class'),
+    path('operation-classes/<int:operation_class_id>/delete/', api_views.api_delete_operation_class, name='api_delete_operation_class'),
+
+    path('work-center-groups/', api_views.api_work_center_groups, name='api_work_center_groups'),
+    path('work-center-groups/create/', api_views.api_create_work_center_group, name='api_create_work_center_group'),
+    path('work-center-groups/update/', api_views.api_update_work_center_group, name='api_update_work_center_group'),
+    path('work-center-groups/<int:work_center_group_id>/delete/', api_views.api_delete_work_center_group, name='api_delete_work_center_group'),
+
+    path('professions/', api_views.api_professions, name='api_professions'),
+    path('professions/create/', api_views.api_create_profession, name='api_create_profession'),
+    path('professions/update/', api_views.api_update_profession, name='api_update_profession'),
+    path('professions/<int:profession_id>/delete/', api_views.api_delete_profession, name='api_delete_profession'),
+
+    path('tooling/', api_views.api_tooling_list, name='api_tooling_list'),
+    path('tooling/create/', api_views.api_create_tooling, name='api_create_tooling'),
+    path('tooling/update/', api_views.api_update_tooling, name='api_update_tooling'),
+    path('tooling/<int:tooling_id>/delete/', api_views.api_delete_tooling, name='api_delete_tooling'),
 ]
+
+######################## маршрутная технология ##################################
+urlpatterns += [
+    path('routes/products/', api_views.api_routable_products, name='api_routable_products'),
+    path('routes/', api_views.api_routes, name='api_routes'),
+    path('routes/create/', api_views.api_create_route, name='api_create_route'),
+    path('routes/update/', api_views.api_update_route, name='api_update_route'),
+    path('routes/<int:route_id>/', api_views.api_route_details, name='api_route_details'),
+    path('routes/<int:route_id>/delete/', api_views.api_delete_route, name='api_delete_route'),
+
+    path('route-operations/create/', api_views.api_create_route_operation, name='api_create_route_operation'),
+    path('route-operations/update/', api_views.api_update_route_operation, name='api_update_route_operation'),
+    path('route-operations/move/', api_views.api_move_route_operation, name='api_move_route_operation'),
+    path('route-operations/<int:operation_id>/delete/', api_views.api_delete_route_operation, name='api_delete_route_operation'),
+
+    path('route-operation-tools/add/', api_views.api_add_operation_tool, name='api_add_operation_tool'),
+    path('route-operation-tools/update/', api_views.api_update_operation_tool, name='api_update_operation_tool'),
+    path('route-operation-tools/<int:operation_tool_id>/delete/', api_views.api_delete_operation_tool, name='api_delete_operation_tool'),
+
+    path('route-operation-materials/add/', api_views.api_add_operation_material, name='api_add_operation_material'),
+    path('route-operation-materials/update/', api_views.api_update_operation_material, name='api_update_operation_material'),
+    path('route-operation-materials/<int:operation_material_id>/delete/', api_views.api_delete_operation_material, name='api_delete_operation_material'),
+    path('technology/<int:product_id>/routes/', api_views.api_technology_routes, name='api_technology_routes'),
+    path('technology/<int:product_id>/labor/', api_views.api_technology_labor, name='api_technology_labor'),
+    path('technology/<int:product_id>/cost/', api_views.api_technology_cost, name='api_technology_cost'),
+]
+
+

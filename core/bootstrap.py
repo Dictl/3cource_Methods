@@ -13,9 +13,12 @@ SCHEMA_FILE = settings.BASE_DIR / 'schema.sql'
 # Инкрементальные изменения схемы: патч применяется, если версия в базе ниже SCHEMA_VERSION
 SCHEMA_PATCHES = {
     2: settings.BASE_DIR / 'schema_patch_v2.sql',
+    3: settings.BASE_DIR / 'schema_patch_v3.sql',
+    4: settings.BASE_DIR / 'schema_patch_v4.sql',
+    6: settings.BASE_DIR / 'schema_patch_v6.sql',
+    7: settings.BASE_DIR / 'schema_patch_v7.sql',
 }
 SCHEMA_VERSION = max(SCHEMA_PATCHES)
-# Таблица из самой свежей части схемы: если её нет — схема не загружена или устарела
 SCHEMA_MARKER_TABLE = 'bom_item'
 
 

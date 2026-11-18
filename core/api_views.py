@@ -66,8 +66,17 @@ from .service import (
     register_change,
     get_bom_changes,
     get_bom_change_log,
+    find_route_deep,
+    calc_labor,
+    calc_cost,
 )
-
+from .service import (
+    get_routable_products, get_routes, get_route_details,
+    create_route, update_route, delete_route,
+    create_route_operation, update_route_operation, move_route_operation, delete_route_operation,
+    add_operation_tool, update_operation_tool, delete_operation_tool,
+    add_operation_material, update_operation_material, delete_operation_material,
+)
 
 def _json_error(message, status=400):
     return JsonResponse({"ok": False, "error": message}, status=status)
@@ -1545,5 +1554,514 @@ def api_bom_change_log(request, product_id):
     try:
         rows = get_bom_change_log(product_id)
         return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+########################################################################################################################
+"справочники техпроцесса"
+########################################################################################################################
+from django.db import transaction
+from core.models import OperationClass, WorkCenterGroup, Profession, Tooling
+from .service import (
+    get_operation_class_tree, create_operation_class, update_operation_class,
+    move_operation_class, delete_operation_class,
+    get_work_center_group_tree, create_work_center_group, update_work_center_group,
+    move_work_center_group, delete_work_center_group,
+    get_all_professions, create_profession, update_profession, delete_profession,
+    get_all_tooling, create_tooling, update_tooling, delete_tooling,
+)
+
+def _serialize_tree_node(n):
+    return {
+        "id": n.id,
+        "name": n.name,
+        "parent_id": n.parent_id,
+        "level": getattr(n, "level", 0),
+        "sort_order": n.sort_order,
+    }
+
+def _serialize_profession(p):
+    return {
+        "id": p.id,
+        "name": p.name,
+        "grade": p.grade,
+        "hourly_rate": float(p.hourly_rate),
+    }
+
+def _serialize_tooling(t):
+    return {
+        "id": t.id,
+        "designation": t.designation,
+        "name": t.name,
+        "tooling_type": t.tooling_type,
+    }
+
+"Обновление узла дерева-справочника: переименование и/или смена родителя одним запросом"
+def _update_tree_from_payload(model, update_fn, move_fn, id_key, payload):
+    node_id = payload.get(id_key)
+    if node_id in (None, ""):
+        raise ValueError(f"{id_key} обязателен")
+
+    node = model.objects.filter(id=int(node_id)).first()
+    if node is None:
+        raise ValueError("Запись не найдена")
+
+    with transaction.atomic():
+        if "name" in payload:
+            node = update_fn(node.id, payload.get("name"))
+        if "parent_id" in payload:
+            new_parent = payload.get("parent_id")
+            new_parent = None if new_parent in ("", None) else int(new_parent)
+            if new_parent != node.parent_id:
+                node = move_fn(node.id, new_parent)
+    return node
+
+# ---------- классы операций ----------
+
+"Получить дерево классов операций с уровнями вложенности"
+@require_http_methods(["GET"])
+def api_operation_classes(request):
+    return JsonResponse({"ok": True, "data": [_serialize_tree_node(n) for n in get_operation_class_tree()]})
+
+"Создать класс операций. {name, parent_id}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_operation_class(request):
+    try:
+        payload = _parse_json(request)
+        node = create_operation_class(payload.get("name"), payload.get("parent_id"))
+        return JsonResponse({"ok": True, "data": _serialize_tree_node(node)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Обновить класс операций (название и/или родителя). {operation_class_id, name, parent_id}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_operation_class(request):
+    try:
+        payload = _parse_json(request)
+        node = _update_tree_from_payload(OperationClass, update_operation_class, move_operation_class,
+                                         "operation_class_id", payload)
+        return JsonResponse({"ok": True, "data": _serialize_tree_node(node)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить класс операций по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_operation_class(request, operation_class_id):
+    try:
+        delete_operation_class(operation_class_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- группы рабочих центров (ГРЦ) ----------
+
+"Получить дерево групп рабочих центров с уровнями вложенности"
+@require_http_methods(["GET"])
+def api_work_center_groups(request):
+    return JsonResponse({"ok": True, "data": [_serialize_tree_node(n) for n in get_work_center_group_tree()]})
+
+"Создать группу рабочих центров. {name, parent_id}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_work_center_group(request):
+    try:
+        payload = _parse_json(request)
+        node = create_work_center_group(payload.get("name"), payload.get("parent_id"))
+        return JsonResponse({"ok": True, "data": _serialize_tree_node(node)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Обновить группу рабочих центров (название и/или родителя). {work_center_group_id, name, parent_id}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_work_center_group(request):
+    try:
+        payload = _parse_json(request)
+        node = _update_tree_from_payload(WorkCenterGroup, update_work_center_group, move_work_center_group,
+                                         "work_center_group_id", payload)
+        return JsonResponse({"ok": True, "data": _serialize_tree_node(node)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить группу рабочих центров по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_work_center_group(request, work_center_group_id):
+    try:
+        delete_work_center_group(work_center_group_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- профессии ----------
+
+"Получить все профессии"
+@require_http_methods(["GET"])
+def api_professions(request):
+    return JsonResponse({"ok": True, "data": [_serialize_profession(p) for p in get_all_professions()]})
+
+"Создать профессию. {name, grade, hourly_rate}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_profession(request):
+    try:
+        payload = _parse_json(request)
+        profession = create_profession(payload.get("name"), payload.get("grade"), payload.get("hourly_rate"))
+        return JsonResponse({"ok": True, "data": _serialize_profession(profession)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Обновить профессию. {profession_id, name, grade, hourly_rate}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_profession(request):
+    try:
+        payload = _parse_json(request)
+        profession = update_profession(
+            profession_id=payload.get("profession_id"),
+            name=payload.get("name"),
+            grade=payload.get("grade"),
+            hourly_rate=payload.get("hourly_rate"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_profession(profession)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить профессию по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_profession(request, profession_id):
+    try:
+        delete_profession(profession_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- инструмент и оснастка ----------
+
+"Получить весь инструмент и оснастку"
+@require_http_methods(["GET"])
+def api_tooling_list(request):
+    return JsonResponse({"ok": True, "data": [_serialize_tooling(t) for t in get_all_tooling()]})
+
+"Создать инструмент или оснастку. {designation, name, tooling_type}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_tooling(request):
+    try:
+        payload = _parse_json(request)
+        tooling = create_tooling(payload.get("designation"), payload.get("name"),
+                                 payload.get("tooling_type", "tool"))
+        return JsonResponse({"ok": True, "data": _serialize_tooling(tooling)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Обновить инструмент или оснастку. {tooling_id, designation, name, tooling_type}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_tooling(request):
+    try:
+        payload = _parse_json(request)
+        tooling = update_tooling(
+            tooling_id=payload.get("tooling_id"),
+            designation=payload.get("designation"),
+            name=payload.get("name"),
+            tooling_type=payload.get("tooling_type"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_tooling(tooling)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить инструмент или оснастку по id"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_tooling(request, tooling_id):
+    try:
+        delete_tooling(tooling_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+
+########################################################################################################################
+"маршрутная технология"
+########################################################################################################################
+
+
+def _serialize_route(r):
+    return {
+        "id": r.id,
+        "product_id": r.product_id,
+        "product_name": r.product.name,
+        "product_designation": r.product.designation,
+        "route_no": r.route_no,
+        "name": r.name,
+    }
+
+def _serialize_route_operation(o):
+    return {
+        "id": o.id,
+        "route_id": o.route_id,
+        "position_no": o.position_no,
+        "name": o.name,
+        "operation_class_id": o.operation_class_id,
+        "work_center_group_id": o.work_center_group_id,
+        "profession_id": o.profession_id,
+        "time_norm": float(o.time_norm),
+        "time_unit_id": o.time_unit_id,
+    }
+
+def _serialize_operation_tool(t):
+    return {
+        "id": t.id,
+        "route_operation_id": t.route_operation_id,
+        "tooling_id": t.tooling_id,
+        "quantity": t.quantity,
+    }
+
+def _serialize_operation_material(m):
+    return {
+        "id": m.id,
+        "route_operation_id": m.route_operation_id,
+        "product_id": m.product_id,
+        "quantity": float(m.quantity),
+        "per_quantity": float(m.per_quantity),
+        "unit_id": m.unit_id,
+    }
+
+# ---------- маршруты ----------
+
+"Изделия, для которых можно создать маршрут (изготавливаемые), с количеством уже созданных маршрутов"
+@require_http_methods(["GET"])
+def api_routable_products(request):
+    try:
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in get_routable_products()]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Список маршрутов. ?product_id=15 - только маршруты этого изделия"
+@require_http_methods(["GET"])
+def api_routes(request):
+    try:
+        routes = get_routes(request.GET.get("product_id"))
+        return JsonResponse({"ok": True, "data": [_serialize_route(r) for r in routes]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Маршрут целиком: операции по порядку, у каждой ГРЦ, профессия, время, инструмент и материалы"
+@require_http_methods(["GET"])
+def api_route_details(request, route_id):
+    try:
+        return JsonResponse({"ok": True, "data": get_route_details(route_id)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Создать маршрут изделия. {product_id, name, route_no}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_route(request):
+    try:
+        payload = _parse_json(request)
+        route = create_route(payload.get("product_id"), payload.get("name"), payload.get("route_no"))
+        return JsonResponse({"ok": True, "data": _serialize_route(route)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Переименовать маршрут. {route_id, name}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_route(request):
+    try:
+        payload = _parse_json(request)
+        route = update_route(payload.get("route_id"), payload.get("name"))
+        return JsonResponse({"ok": True, "data": _serialize_route(route)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить маршрут вместе с операциями"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_route(request, route_id):
+    try:
+        delete_route(route_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- операции маршрута ----------
+
+"""Добавить операцию в маршрут.
+    {route_id, name, operation_class_id, work_center_group_id, profession_id, time_norm, time_unit_id, position_no}"""
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_create_route_operation(request):
+    try:
+        payload = _parse_json(request)
+        operation = create_route_operation(
+            route_id=payload.get("route_id"),
+            name=payload.get("name"),
+            operation_class_id=payload.get("operation_class_id"),
+            work_center_group_id=payload.get("work_center_group_id"),
+            profession_id=payload.get("profession_id"),
+            time_norm=payload.get("time_norm"),
+            time_unit_id=payload.get("time_unit_id"),
+            position_no=payload.get("position_no"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_route_operation(operation)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Изменить операцию маршрута. {operation_id, name, operation_class_id, work_center_group_id, profession_id, time_norm, time_unit_id, position_no}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_route_operation(request):
+    try:
+        payload = _parse_json(request)
+        operation = update_route_operation(
+            operation_id=payload.get("operation_id"),
+            name=payload.get("name"),
+            operation_class_id=payload.get("operation_class_id"),
+            work_center_group_id=payload.get("work_center_group_id"),
+            profession_id=payload.get("profession_id"),
+            time_norm=payload.get("time_norm"),
+            time_unit_id=payload.get("time_unit_id"),
+            position_no=payload.get("position_no"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_route_operation(operation)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Переместить операцию на другую позицию. {operation_id, position_no}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_move_route_operation(request):
+    try:
+        payload = _parse_json(request)
+        operation = move_route_operation(payload.get("operation_id"), payload.get("position_no"))
+        return JsonResponse({"ok": True, "data": _serialize_route_operation(operation)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Удалить операцию маршрута"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_route_operation(request, operation_id):
+    try:
+        delete_route_operation(operation_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- инструмент и оснастка операции ----------
+
+"Добавить инструмент в операцию. {operation_id, tooling_id, quantity}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_add_operation_tool(request):
+    try:
+        payload = _parse_json(request)
+        item = add_operation_tool(payload.get("operation_id"), payload.get("tooling_id"),
+                                  payload.get("quantity", 1))
+        return JsonResponse({"ok": True, "data": _serialize_operation_tool(item)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Изменить количество инструмента в операции. {operation_tool_id, quantity}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_operation_tool(request):
+    try:
+        payload = _parse_json(request)
+        item = update_operation_tool(payload.get("operation_tool_id"), payload.get("quantity"))
+        return JsonResponse({"ok": True, "data": _serialize_operation_tool(item)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Убрать инструмент из операции"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_operation_tool(request, operation_tool_id):
+    try:
+        delete_operation_tool(operation_tool_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+# ---------- материалы и комплектующие операции ----------
+
+"Добавить материал в операцию. {operation_id, product_id, quantity, per_quantity, unit_id}"
+@csrf_exempt
+@require_http_methods(["POST"])
+def api_add_operation_material(request):
+    try:
+        payload = _parse_json(request)
+        item = add_operation_material(
+            operation_id=payload.get("operation_id"),
+            product_id=payload.get("product_id"),
+            quantity=payload.get("quantity"),
+            per_quantity=payload.get("per_quantity", 1),
+            unit_id=payload.get("unit_id"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_operation_material(item)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Изменить норму расхода материала в операции. {operation_material_id, quantity, per_quantity, unit_id}"
+@csrf_exempt
+@require_http_methods(["PUT"])
+def api_update_operation_material(request):
+    try:
+        payload = _parse_json(request)
+        item = update_operation_material(
+            operation_material_id=payload.get("operation_material_id"),
+            quantity=payload.get("quantity"),
+            per_quantity=payload.get("per_quantity"),
+            unit_id=payload.get("unit_id"),
+        )
+        return JsonResponse({"ok": True, "data": _serialize_operation_material(item)})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Убрать материал из операции"
+@csrf_exempt
+@require_http_methods(["DELETE"])
+def api_delete_operation_material(request, operation_material_id):
+    try:
+        delete_operation_material(operation_material_id)
+        return JsonResponse({"ok": True})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+########################################################################################################################
+"технология: анализ, нормы, калькуляция"
+########################################################################################################################
+
+"Анализ технологичности: все операции маршрутов изделия и его компонентов"
+@require_http_methods(["GET"])
+def api_technology_routes(request, product_id):
+    try:
+        rows = find_route_deep(product_id)
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Потребность в трудовых ресурсах. ?quantity=1000"
+@require_http_methods(["GET"])
+def api_technology_labor(request, product_id):
+    try:
+        rows = calc_labor(product_id, request.GET.get("quantity", 1))
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Калькуляция себестоимости. ?quantity=1000"
+@require_http_methods(["GET"])
+def api_technology_cost(request, product_id):
+    try:
+        row = calc_cost(product_id, request.GET.get("quantity", 1))
+        return JsonResponse({"ok": True, "data": _serialize_db_row(row)})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))

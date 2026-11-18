@@ -11,7 +11,13 @@ from core.models import (
     ParameterDefinition,
     BomChange,
     BomItem,
+    OperationClass,
+    WorkCenterGroup,
+    Profession,
+    Tooling,
 )
+from core.models import Route, RouteOperation, RouteOperationTool, RouteOperationMaterial
+from django.db import IntegrityError
 from django.db import connection, transaction, DatabaseError
 from django.db.models import Q
 from typing import Optional
@@ -1377,3 +1383,704 @@ def get_bom_change_log(product_id):
         ORDER BY l.changed_at DESC, l.id DESC
     """
     return _call_db_function(sql, [product_id])
+
+#############################################СПРАВОЧНИКИ ТЕХПРОЦЕССА#############################################
+
+"Следующий sort_order среди детей родителя (общий для деревьев справочников техпроцесса)"
+def _next_tree_sort_order(model, parent_id):
+    last = model.objects.filter(parent_id=parent_id).order_by('-sort_order').first()
+    return (last.sort_order + 1) if last else 0
+
+"Добавление узла в дерево-справочник. Нельзя добавить с таким же названием"
+def _add_tree_node(model, title, name, parent_id):
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Название не может быть пустым")
+
+    if model.objects.filter(name__iexact=name).exists():
+        raise ValueError(f"{title} с названием '{name}' уже существует")
+
+    if parent_id in (None, ""):
+        parent_id = None
+    else:
+        parent_id = int(parent_id)
+        if not model.objects.filter(id=parent_id).exists():
+            raise ValueError("Нет такого родителя")
+
+    node = model(name=name, parent_id=parent_id, sort_order=_next_tree_sort_order(model, parent_id))
+    node.save()
+    return node
+
+"Переименование узла дерева-справочника"
+def _update_tree_node(model, title, node_id, name=None):
+    node = model.objects.filter(id=int(node_id)).first()
+    if node is None:
+        raise ValueError(f"{title} не найден")
+
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise ValueError("Название не может быть пустым")
+        if model.objects.filter(name__iexact=name).exclude(id=node.id).exists():
+            raise ValueError(f"{title} с названием '{name}' уже существует")
+        node.name = name
+
+    node.save()
+    return node
+
+"Перемещение узла к другому родителю (смена родителя). Нельзя переместить в себя или в потомка"
+def _move_tree_node(model, title, node_id, new_parent_id):
+    node_id = int(node_id)
+    if new_parent_id in (None, ""):
+        new_parent_id = None
+    else:
+        new_parent_id = int(new_parent_id)
+        if not model.objects.filter(id=new_parent_id).exists():
+            raise ValueError("Нет такого родителя")
+
+    node = model.objects.filter(id=node_id).first()
+    if node is None:
+        raise ValueError(f"{title} не найден")
+
+    if would_create_cycle(list(model.objects.all()), node_id, new_parent_id):
+        raise ValueError("Нельзя переместить вершину в саму себя или в своего потомка (цикл)")
+
+    node.parent_id = new_parent_id
+    node.sort_order = _next_tree_sort_order(model, new_parent_id)
+    node.save()
+    return node
+
+"Удаление узла дерева-справочника. Нельзя удалить узел с подчинёнными или используемый в маршрутах"
+def _delete_tree_node(model, title, node_id):
+    node = model.objects.filter(id=int(node_id)).first()
+    if node is None:
+        raise ValueError(f"{title} не найден")
+
+    if model.objects.filter(parent_id=node.id).exists():
+        raise ValueError("Нельзя удалить запись, у которой есть подчинённые")
+
+    try:
+        with transaction.atomic():
+            node.delete()
+    except IntegrityError as e:
+        raise ValueError("Нельзя удалить запись: она используется в маршрутах") from e
+
+#############################################КЛАССЫ ОПЕРАЦИЙ#############################################
+
+"Дерево классов операций с уровнями вложенности (для древовидного вывода)"
+def get_operation_class_tree():
+    return build_tree_with_levels(list(OperationClass.objects.order_by('sort_order', 'id')))
+
+"Добавление класса операций"
+def create_operation_class(name, parent_id=None):
+    return _add_tree_node(OperationClass, "Класс операций", name, parent_id)
+
+"Редактирование (переименование) класса операций"
+def update_operation_class(operation_class_id, name=None):
+    return _update_tree_node(OperationClass, "Класс операций", operation_class_id, name)
+
+"Перемещение класса операций к другому родителю"
+def move_operation_class(operation_class_id, new_parent_id):
+    return _move_tree_node(OperationClass, "Класс операций", operation_class_id, new_parent_id)
+
+"Удаление класса операций"
+def delete_operation_class(operation_class_id):
+    _delete_tree_node(OperationClass, "Класс операций", operation_class_id)
+
+#############################################ГРУППЫ РАБОЧИХ ЦЕНТРОВ (ГРЦ)#############################################
+
+"Дерево групп рабочих центров с уровнями вложенности (цех -> участок -> ГРЦ)"
+def get_work_center_group_tree():
+    return build_tree_with_levels(list(WorkCenterGroup.objects.order_by('sort_order', 'id')))
+
+"Добавление группы рабочих центров"
+def create_work_center_group(name, parent_id=None):
+    return _add_tree_node(WorkCenterGroup, "Группа рабочих центров", name, parent_id)
+
+"Редактирование (переименование) группы рабочих центров"
+def update_work_center_group(work_center_group_id, name=None):
+    return _update_tree_node(WorkCenterGroup, "Группа рабочих центров", work_center_group_id, name)
+
+"Перемещение группы рабочих центров к другому родителю"
+def move_work_center_group(work_center_group_id, new_parent_id):
+    return _move_tree_node(WorkCenterGroup, "Группа рабочих центров", work_center_group_id, new_parent_id)
+
+"Удаление группы рабочих центров"
+def delete_work_center_group(work_center_group_id):
+    _delete_tree_node(WorkCenterGroup, "Группа рабочих центров", work_center_group_id)
+
+#############################################ПРОФЕССИИ#############################################
+
+"Проверка квалификации (разряда) и часовой ставки"
+def _check_profession_values(grade, hourly_rate):
+    try:
+        grade = int(grade)
+    except (TypeError, ValueError):
+        raise ValueError("Разряд должен быть целым числом")
+    if not 1 <= grade <= 8:
+        raise ValueError("Разряд должен быть от 1 до 8")
+
+    try:
+        hourly_rate = Decimal(str(hourly_rate))
+    except Exception as exc:
+        raise ValueError("Ставка должна быть числом") from exc
+    if hourly_rate < 0:
+        raise ValueError("Ставка не может быть отрицательной")
+
+    return grade, hourly_rate
+
+"Получение всех профессий"
+def get_all_professions():
+    return list(Profession.objects.order_by('name', 'grade'))
+
+"Добавление профессии. Нельзя добавить с таким же названием и разрядом"
+def create_profession(name, grade, hourly_rate):
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Название не может быть пустым")
+
+    grade, hourly_rate = _check_profession_values(grade, hourly_rate)
+
+    if Profession.objects.filter(name__iexact=name, grade=grade).exists():
+        raise ValueError("Такая профессия с этим разрядом уже существует")
+
+    profession = Profession(name=name, grade=grade, hourly_rate=hourly_rate)
+    profession.save()
+    return profession
+
+"Редактирование профессии"
+def update_profession(profession_id, name=None, grade=None, hourly_rate=None):
+    profession = Profession.objects.filter(id=int(profession_id)).first()
+    if profession is None:
+        raise ValueError("Нет такой профессии")
+
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise ValueError("Название не может быть пустым")
+        profession.name = name
+
+    new_grade, new_rate = _check_profession_values(
+        profession.grade if grade is None else grade,
+        profession.hourly_rate if hourly_rate is None else hourly_rate,
+    )
+    profession.grade = new_grade
+    profession.hourly_rate = new_rate
+
+    if Profession.objects.filter(name__iexact=profession.name, grade=profession.grade) \
+            .exclude(id=profession.id).exists():
+        raise ValueError("Такая профессия с этим разрядом уже существует")
+
+    profession.save()
+    return profession
+
+"Удаление профессии. Нельзя удалить профессию, которая используется в операциях маршрутов"
+def delete_profession(profession_id):
+    profession = Profession.objects.filter(id=int(profession_id)).first()
+    if profession is None:
+        raise ValueError("Нет такой профессии")
+
+    try:
+        with transaction.atomic():
+            profession.delete()
+    except IntegrityError as e:
+        raise ValueError("Нельзя удалить профессию: она используется в операциях маршрутов") from e
+
+#############################################ИНСТРУМЕНТ И ОСНАСТКА#############################################
+
+"Проверка вида инструмента: tool - инструмент, fixture - оснастка"
+def _check_tooling_type(tooling_type):
+    tooling_type = (tooling_type or "").strip()
+    if tooling_type not in ("tool", "fixture"):
+        raise ValueError("tooling_type должен быть: tool или fixture")
+    return tooling_type
+
+"Получение всего инструмента и оснастки"
+def get_all_tooling():
+    return list(Tooling.objects.order_by('designation'))
+
+"Добавление инструмента или оснастки. Нельзя добавить с таким же обозначением"
+def create_tooling(designation, name, tooling_type='tool'):
+    designation = (designation or "").strip()
+    name = (name or "").strip()
+    if not designation:
+        raise ValueError("Обозначение не может быть пустым")
+    if not name:
+        raise ValueError("Название не может быть пустым")
+
+    tooling_type = _check_tooling_type(tooling_type)
+
+    if Tooling.objects.filter(designation__iexact=designation).exists():
+        raise ValueError(f"Инструмент с обозначением '{designation}' уже существует")
+
+    tooling = Tooling(designation=designation, name=name, tooling_type=tooling_type)
+    tooling.save()
+    return tooling
+
+"Редактирование инструмента или оснастки"
+def update_tooling(tooling_id, designation=None, name=None, tooling_type=None):
+    tooling = Tooling.objects.filter(id=int(tooling_id)).first()
+    if tooling is None:
+        raise ValueError("Нет такого инструмента")
+
+    if designation is not None:
+        designation = designation.strip()
+        if not designation:
+            raise ValueError("Обозначение не может быть пустым")
+        if Tooling.objects.filter(designation__iexact=designation).exclude(id=tooling.id).exists():
+            raise ValueError(f"Инструмент с обозначением '{designation}' уже существует")
+        tooling.designation = designation
+
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise ValueError("Название не может быть пустым")
+        tooling.name = name
+
+    if tooling_type is not None:
+        tooling.tooling_type = _check_tooling_type(tooling_type)
+
+    tooling.save()
+    return tooling
+
+"Удаление инструмента. Нельзя удалить инструмент, который используется в операциях маршрутов"
+def delete_tooling(tooling_id):
+    tooling = Tooling.objects.filter(id=int(tooling_id)).first()
+    if tooling is None:
+        raise ValueError("Нет такого инструмента")
+
+    try:
+        with transaction.atomic():
+            tooling.delete()
+    except IntegrityError as e:
+        raise ValueError("Нельзя удалить инструмент: он используется в операциях маршрутов") from e
+
+
+#############################################МАРШРУТНАЯ ТЕХНОЛОГИЯ#############################################
+
+"Объект по id или ValueError с понятным текстом"
+def _get_by_id(model, obj_id, title):
+    try:
+        obj_id = int(obj_id)
+    except (TypeError, ValueError):
+        raise ValueError(f"Некорректный id: {title}")
+    obj = model.objects.filter(id=obj_id).first()
+    if obj is None:
+        raise ValueError(f"Не найдено: {title}")
+    return obj
+
+"Проверка ссылки на справочник: id должен быть числом и такая запись должна существовать"
+def _require_ref(model, obj_id, title):
+    try:
+        obj_id = int(obj_id)
+    except (TypeError, ValueError):
+        raise ValueError(f"Не выбрано: {title}")
+    if not model.objects.filter(id=obj_id).exists():
+        raise ValueError(f"Не найдено: {title}")
+    return obj_id
+
+"Положительное число (Decimal)"
+def _check_positive_decimal(value, title):
+    try:
+        value = Decimal(str(value))
+    except Exception as exc:
+        raise ValueError(f"«{title}» должно быть числом") from exc
+    if value <= 0:
+        raise ValueError(f"«{title}» должно быть больше нуля")
+    return value
+
+"Положительное целое число"
+def _check_positive_int(value, title):
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"«{title}» должно быть целым числом")
+    if value <= 0:
+        raise ValueError(f"«{title}» должно быть больше нуля")
+    return value
+
+"Маршрут возможен только у изготавливаемых изделий (тип с can_have_bom). Те же правила держит триггер БД"
+def _check_product_can_have_route(product_id):
+    rows = _call_db_function(
+        "SELECT pt.name, pt.can_have_bom FROM product p "
+        "JOIN product_type pt ON pt.code = p.product_type_code WHERE p.id = %s",
+        [product_id],
+    )
+    if rows and not rows[0]["can_have_bom"]:
+        raise ValueError(f"Для изделия типа «{rows[0]['name']}» маршрут не создаётся: оно не изготавливается")
+
+"Изделия, для которых можно создать маршрут (для выбора изделия). route_count - сколько маршрутов уже есть"
+def get_routable_products():
+    sql = """
+        SELECT p.id, p.designation, p.name, p.product_type_code,
+               pt.name AS product_type_name,
+               (SELECT count(*) FROM route r WHERE r.product_id = p.id) AS route_count
+        FROM product p
+        JOIN product_type pt ON pt.code = p.product_type_code
+        WHERE pt.can_have_bom
+        ORDER BY p.designation NULLS LAST, p.name
+    """
+    return _call_db_function(sql, [])
+
+#############################################МАРШРУТЫ#############################################
+
+"Список маршрутов. product_id - только маршруты этого изделия"
+def get_routes(product_id=None):
+    routes = Route.objects.select_related('product').order_by('product_id', 'route_no')
+    if product_id not in (None, ""):
+        routes = routes.filter(product_id=_check_product_exists(product_id))
+    return list(routes)
+
+"""Создание маршрута изделия. У изделия может быть несколько маршрутов (версий).
+    Нельзя создать для изделия, которое не изготавливается (материал, комплектующее)"""
+def create_route(product_id, name=None, route_no=None):
+    product_id = _check_product_exists(product_id)
+    _check_product_can_have_route(product_id)
+    product = Product.objects.get(id=product_id)
+
+    name = (name or "").strip() or f"Маршрут изделия «{product.name}»"
+
+    if route_no in (None, ""):
+        last = Route.objects.filter(product_id=product_id).order_by('-route_no').first()
+        route_no = (last.route_no + 1) if last else 1
+    else:
+        route_no = _check_positive_int(route_no, "Номер маршрута")
+        if Route.objects.filter(product_id=product_id, route_no=route_no).exists():
+            raise ValueError("Маршрут с таким номером у изделия уже существует")
+
+    try:
+        with transaction.atomic():
+            route = Route(product_id=product_id, route_no=route_no, name=name)
+            route.save()
+    except DatabaseError as e:
+        raise ValueError(_db_message(e)) from e
+    return route
+
+"Переименование маршрута"
+def update_route(route_id, name=None):
+    route = _get_by_id(Route, route_id, "маршрут")
+
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise ValueError("Название маршрута не может быть пустым")
+        route.name = name
+
+    route.save()
+    return route
+
+"Удаление маршрута вместе с его операциями, инструментом и материалами"
+def delete_route(route_id):
+    route = _get_by_id(Route, route_id, "маршрут")
+    try:
+        with transaction.atomic():
+            route.delete()
+    except DatabaseError as e:
+        raise ValueError(_db_message(e)) from e
+
+"""Маршрут целиком: операции по порядку, у каждой класс операции, ГРЦ, профессия с ставкой,
+    норма времени, инструмент и оснастка, материалы и комплектующие с нормами"""
+def get_route_details(route_id):
+    route = _get_by_id(Route, route_id, "маршрут")
+    product = Product.objects.get(id=route.product_id)
+
+    operations = list(
+        RouteOperation.objects
+        .filter(route_id=route.id)
+        .select_related('operation_class', 'work_center_group', 'profession', 'time_unit')
+        .order_by('position_no', 'id')
+    )
+    operation_ids = [o.id for o in operations]
+
+    tools_by_operation = {}
+    for t in (RouteOperationTool.objects
+              .filter(route_operation_id__in=operation_ids)
+              .select_related('tooling').order_by('id')):
+        tools_by_operation.setdefault(t.route_operation_id, []).append({
+            "id": t.id,
+            "tooling_id": t.tooling_id,
+            "designation": t.tooling.designation,
+            "name": t.tooling.name,
+            "tooling_type": t.tooling.tooling_type,
+            "quantity": t.quantity,
+        })
+
+    materials_by_operation = {}
+    for m in (RouteOperationMaterial.objects
+              .filter(route_operation_id__in=operation_ids)
+              .select_related('product', 'unit').order_by('id')):
+        materials_by_operation.setdefault(m.route_operation_id, []).append({
+            "id": m.id,
+            "product_id": m.product_id,
+            "designation": m.product.designation,
+            "name": m.product.name,
+            "quantity": float(m.quantity),
+            "per_quantity": float(m.per_quantity),
+            "unit_id": m.unit_id,
+            "unit_symbol": m.unit.symbol,
+        })
+
+    return {
+        "route": {
+            "id": route.id,
+            "product_id": route.product_id,
+            "product_name": product.name,
+            "product_designation": product.designation,
+            "route_no": route.route_no,
+            "name": route.name,
+        },
+        "operations": [
+            {
+                "id": o.id,
+                "position_no": o.position_no,
+                "name": o.name,
+                "operation_class": {"id": o.operation_class_id, "name": o.operation_class.name},
+                "work_center_group": {"id": o.work_center_group_id, "name": o.work_center_group.name},
+                "profession": {
+                    "id": o.profession_id,
+                    "name": o.profession.name,
+                    "grade": o.profession.grade,
+                    "hourly_rate": float(o.profession.hourly_rate),
+                },
+                "time_norm": float(o.time_norm),
+                "time_unit_id": o.time_unit_id,
+                "time_unit_symbol": o.time_unit.symbol,
+                "tools": tools_by_operation.get(o.id, []),
+                "materials": materials_by_operation.get(o.id, []),
+            }
+            for o in operations
+        ],
+    }
+
+#############################################ОПЕРАЦИИ МАРШРУТА#############################################
+
+"Следующий номер операции в маршруте"
+def _next_operation_position(route_id):
+    last = RouteOperation.objects.filter(route_id=route_id).order_by('-position_no').first()
+    return (last.position_no + 1) if last else 1
+
+"""Перенумеровать операции маршрута 1..N. Делается в два прохода: пара (route_id, position_no) уникальна,
+    поэтому напрямую поменять номера местами нельзя"""
+def _renumber_route_operations(route_id, ordered_ids=None):
+    if ordered_ids is None:
+        ordered_ids = list(
+            RouteOperation.objects.filter(route_id=route_id)
+            .order_by('position_no', 'id').values_list('id', flat=True)
+        )
+    for index, operation_id in enumerate(ordered_ids, start=1):
+        RouteOperation.objects.filter(id=operation_id).update(position_no=-index)
+    for index, operation_id in enumerate(ordered_ids, start=1):
+        RouteOperation.objects.filter(id=operation_id).update(position_no=index)
+
+"Переместить операцию на новую позицию в последовательности (остальные сдвигаются)"
+def move_route_operation(operation_id, new_position):
+    operation = _get_by_id(RouteOperation, operation_id, "операция маршрута")
+    new_position = _check_positive_int(new_position, "Позиция")
+
+    ordered_ids = list(
+        RouteOperation.objects.filter(route_id=operation.route_id)
+        .order_by('position_no', 'id').values_list('id', flat=True)
+    )
+    ordered_ids.remove(operation.id)
+    new_position = min(new_position, len(ordered_ids) + 1)
+    ordered_ids.insert(new_position - 1, operation.id)
+
+    try:
+        with transaction.atomic():
+            _renumber_route_operations(operation.route_id, ordered_ids)
+    except DatabaseError as e:
+        raise ValueError(_db_message(e)) from e
+    return RouteOperation.objects.get(id=operation.id)
+
+"""Добавление операции в маршрут. Для операции указываются класс операции, ГРЦ (оборудование),
+    профессия (квалификация задаётся разрядом профессии) и норма времени.
+    position_no не указан - операция добавляется в конец"""
+def create_route_operation(route_id, name, operation_class_id, work_center_group_id, profession_id,
+                           time_norm, time_unit_id, position_no=None):
+    route = _get_by_id(Route, route_id, "маршрут")
+    operation_class_id = _require_ref(OperationClass, operation_class_id, "класс операций")
+    work_center_group_id = _require_ref(WorkCenterGroup, work_center_group_id, "группа рабочих центров")
+    profession_id = _require_ref(Profession, profession_id, "профессия")
+    time_unit_id = _require_ref(Unit, time_unit_id, "единица времени")
+    time_norm = _check_positive_decimal(time_norm, "Норма времени")
+
+    name = (name or "").strip() or OperationClass.objects.get(id=operation_class_id).name
+
+    try:
+        with transaction.atomic():
+            operation = RouteOperation(
+                route_id=route.id,
+                position_no=_next_operation_position(route.id),
+                name=name,
+                operation_class_id=operation_class_id,
+                work_center_group_id=work_center_group_id,
+                profession_id=profession_id,
+                time_norm=time_norm,
+                time_unit_id=time_unit_id,
+            )
+            operation.save()
+            if position_no not in (None, ""):
+                move_route_operation(operation.id, position_no)
+    except DatabaseError as e:
+        # например, единица времени не из размерности «Время» (триггер БД)
+        raise ValueError(_db_message(e)) from e
+    return RouteOperation.objects.get(id=operation.id)
+
+"Редактирование операции маршрута. Передаются только изменяемые поля"
+def update_route_operation(operation_id, name=None, operation_class_id=None, work_center_group_id=None,
+                           profession_id=None, time_norm=None, time_unit_id=None, position_no=None):
+    operation = _get_by_id(RouteOperation, operation_id, "операция маршрута")
+
+    if name is not None:
+        name = name.strip()
+        if not name:
+            raise ValueError("Название операции не может быть пустым")
+        operation.name = name
+
+    if operation_class_id is not None:
+        operation.operation_class_id = _require_ref(OperationClass, operation_class_id, "класс операций")
+    if work_center_group_id is not None:
+        operation.work_center_group_id = _require_ref(WorkCenterGroup, work_center_group_id, "группа рабочих центров")
+    if profession_id is not None:
+        operation.profession_id = _require_ref(Profession, profession_id, "профессия")
+    if time_unit_id is not None:
+        operation.time_unit_id = _require_ref(Unit, time_unit_id, "единица времени")
+    if time_norm is not None:
+        operation.time_norm = _check_positive_decimal(time_norm, "Норма времени")
+
+    try:
+        with transaction.atomic():
+            operation.save()
+            if position_no not in (None, ""):
+                move_route_operation(operation.id, position_no)
+    except DatabaseError as e:
+        raise ValueError(_db_message(e)) from e
+    return RouteOperation.objects.get(id=operation.id)
+
+"Удаление операции маршрута (вместе с её инструментом и материалами). Номера остальных операций выравниваются"
+def delete_route_operation(operation_id):
+    operation = _get_by_id(RouteOperation, operation_id, "операция маршрута")
+    route_id = operation.route_id
+    try:
+        with transaction.atomic():
+            operation.delete()
+            _renumber_route_operations(route_id)
+    except DatabaseError as e:
+        raise ValueError(_db_message(e)) from e
+
+#############################################ИНСТРУМЕНТ И ОСНАСТКА ОПЕРАЦИИ#############################################
+
+"Добавление инструмента или оснастки в операцию. Один и тот же инструмент в операцию дважды не добавляется"
+def add_operation_tool(operation_id, tooling_id, quantity=1):
+    operation = _get_by_id(RouteOperation, operation_id, "операция маршрута")
+    tooling_id = _require_ref(Tooling, tooling_id, "инструмент")
+    quantity = _check_positive_int(quantity, "Количество")
+
+    if RouteOperationTool.objects.filter(route_operation_id=operation.id, tooling_id=tooling_id).exists():
+        raise ValueError("Этот инструмент уже добавлен в операцию")
+
+    try:
+        with transaction.atomic():
+            item = RouteOperationTool(route_operation_id=operation.id, tooling_id=tooling_id, quantity=quantity)
+            item.save()
+    except DatabaseError as e:
+        raise ValueError(_db_message(e)) from e
+    return item
+
+"Изменение количества инструмента в операции"
+def update_operation_tool(operation_tool_id, quantity=None):
+    item = _get_by_id(RouteOperationTool, operation_tool_id, "инструмент операции")
+
+    if quantity is not None:
+        item.quantity = _check_positive_int(quantity, "Количество")
+
+    item.save()
+    return item
+
+"Удаление инструмента из операции"
+def delete_operation_tool(operation_tool_id):
+    item = _get_by_id(RouteOperationTool, operation_tool_id, "инструмент операции")
+    item.delete()
+
+#############################################МАТЕРИАЛЫ И КОМПЛЕКТУЮЩИЕ ОПЕРАЦИИ#############################################
+
+"Единица нормы должна быть той же размерности, что и единица изделия (если у изделия она задана)"
+def _check_material_unit(product_id, unit_id):
+    unit_id = _require_ref(Unit, unit_id, "единица измерения")
+    product = Product.objects.get(id=product_id)
+    if product.unit_id:
+        product_unit = Unit.objects.filter(id=product.unit_id).first()
+        unit = Unit.objects.get(id=unit_id)
+        if product_unit and product_unit.dimension_id != unit.dimension_id:
+            raise ValueError("Единица нормы не совпадает по размерности с единицей изделия")
+    return unit_id
+
+"""Добавление материала или комплектующего в операцию. Норма расхода = quantity / per_quantity на единицу изделия маршрута.
+    Расходоваться может любое изделие каталога (в том числе полуфабрикат), кроме самого изделия маршрута"""
+def add_operation_material(operation_id, product_id, quantity, per_quantity=1, unit_id=None):
+    operation = _get_by_id(RouteOperation, operation_id, "операция маршрута")
+    route = Route.objects.get(id=operation.route_id)
+    product_id = _check_product_exists(product_id)
+
+    if product_id == route.product_id:
+        raise ValueError("Изделие не может расходоваться на собственном маршруте")
+
+    quantity = _check_positive_decimal(quantity, "Норма")
+    per_quantity = _check_positive_decimal(per_quantity, "На количество")
+    unit_id = _check_material_unit(product_id, unit_id)
+
+    if RouteOperationMaterial.objects.filter(route_operation_id=operation.id, product_id=product_id).exists():
+        raise ValueError("Этот материал уже добавлен в операцию")
+
+    try:
+        with transaction.atomic():
+            item = RouteOperationMaterial(
+                route_operation_id=operation.id,
+                product_id=product_id,
+                quantity=quantity,
+                per_quantity=per_quantity,
+                unit_id=unit_id,
+            )
+            item.save()
+    except DatabaseError as e:
+        raise ValueError(_db_message(e)) from e
+    return item
+
+"Изменение нормы расхода материала в операции"
+def update_operation_material(operation_material_id, quantity=None, per_quantity=None, unit_id=None):
+    item = _get_by_id(RouteOperationMaterial, operation_material_id, "материал операции")
+
+    if quantity is not None:
+        item.quantity = _check_positive_decimal(quantity, "Норма")
+    if per_quantity is not None:
+        item.per_quantity = _check_positive_decimal(per_quantity, "На количество")
+    if unit_id is not None:
+        item.unit_id = _check_material_unit(item.product_id, unit_id)
+
+    item.save()
+    return item
+
+"Удаление материала из операции"
+def delete_operation_material(operation_material_id):
+    item = _get_by_id(RouteOperationMaterial, operation_material_id, "материал операции")
+    item.delete()
+
+#############################################ТЕХНОЛОГИЯ: АНАЛИЗ, НОРМЫ, КАЛЬКУЛЯЦИЯ#############################################
+
+"Анализ технологичности: все операции маршрутов изделия и его компонентов на всю глубину состава"
+def find_route_deep(product_id):
+    product_id = _check_product_exists(product_id)
+    return _call_db_function("SELECT * FROM find_route_deep(%s)", [product_id])
+
+"Потребность в трудовых ресурсах на quantity изделий: часы и стоимость по профессиям"
+def calc_labor(product_id, quantity=1):
+    product_id = _check_product_exists(product_id)
+    quantity = _check_quantity(quantity)
+    return _call_db_function("SELECT * FROM calc_labor(%s, %s)", [product_id, quantity])
+
+"Калькуляция себестоимости на quantity изделий: материалы, труд, итого и на единицу"
+def calc_cost(product_id, quantity=1):
+    product_id = _check_product_exists(product_id)
+    quantity = _check_quantity(quantity)
+    rows = _call_db_function("SELECT * FROM calc_cost(%s, %s)", [product_id, quantity])
+    return rows[0]

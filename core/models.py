@@ -184,3 +184,103 @@ class UnitDimension(models.Model):
     class Meta:
         managed = False
         db_table = 'unit_dimension'
+
+class OperationClass(models.Model):
+    parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.RESTRICT,
+                               db_column='parent_id', related_name='children')
+    name = models.TextField(unique=True)
+    sort_order = models.IntegerField(default=0)
+
+    class Meta:
+        db_table = 'operation_class'
+        managed = False
+
+
+class WorkCenterGroup(models.Model):
+    parent = models.ForeignKey('self', null=True, blank=True, on_delete=models.RESTRICT,
+                               db_column='parent_id', related_name='children')
+    name = models.TextField(unique=True)
+    sort_order = models.IntegerField(default=0)
+
+    class Meta:
+        db_table = 'work_center_group'
+        managed = False
+
+
+class Profession(models.Model):
+    name = models.CharField(max_length=128)
+    grade = models.IntegerField()
+    hourly_rate = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        db_table = 'profession'
+        managed = False
+
+
+class Tooling(models.Model):
+    designation = models.CharField(max_length=64, unique=True)
+    name = models.TextField()
+    tooling_type = models.CharField(max_length=8, default='tool')
+
+    class Meta:
+        db_table = 'tooling'
+        managed = False
+
+
+class Route(models.Model):
+    # created_at не описан: его заполняет значение по умолчанию в БД
+    product = models.ForeignKey('Product', on_delete=models.CASCADE,
+                                db_column='product_id', related_name='routes')
+    route_no = models.IntegerField(default=1)
+    name = models.TextField()
+
+    class Meta:
+        db_table = 'route'
+        managed = False
+
+
+class RouteOperation(models.Model):
+    route = models.ForeignKey(Route, on_delete=models.CASCADE,
+                              db_column='route_id', related_name='operations')
+    position_no = models.IntegerField()
+    name = models.TextField()
+    operation_class = models.ForeignKey(OperationClass, on_delete=models.DO_NOTHING,
+                                        db_column='operation_class_id')
+    work_center_group = models.ForeignKey(WorkCenterGroup, on_delete=models.DO_NOTHING,
+                                          db_column='work_center_group_id')
+    profession = models.ForeignKey(Profession, on_delete=models.DO_NOTHING,
+                                   db_column='profession_id')
+    time_norm = models.DecimalField(max_digits=10, decimal_places=2)
+    time_unit = models.ForeignKey('Unit', on_delete=models.DO_NOTHING,
+                                  db_column='time_unit_id', related_name='+')
+
+    class Meta:
+        db_table = 'route_operation'
+        managed = False
+
+
+class RouteOperationTool(models.Model):
+    route_operation = models.ForeignKey(RouteOperation, on_delete=models.CASCADE,
+                                        db_column='route_operation_id', related_name='tools')
+    tooling = models.ForeignKey(Tooling, on_delete=models.DO_NOTHING,
+                                db_column='tooling_id')
+    quantity = models.IntegerField(default=1)
+
+    class Meta:
+        db_table = 'route_operation_tool'
+        managed = False
+
+
+class RouteOperationMaterial(models.Model):
+    route_operation = models.ForeignKey(RouteOperation, on_delete=models.CASCADE,
+                                        db_column='route_operation_id', related_name='materials')
+    product = models.ForeignKey('Product', on_delete=models.DO_NOTHING,
+                                db_column='product_id', related_name='route_materials')
+    quantity = models.DecimalField(max_digits=18, decimal_places=6)
+    per_quantity = models.DecimalField(max_digits=18, decimal_places=6, default=1)
+    unit = models.ForeignKey('Unit', on_delete=models.DO_NOTHING,
+                             db_column='unit_id', related_name='+')
+
+    class Meta:
+        db_table = 'route_operation_material'
+        managed = False
