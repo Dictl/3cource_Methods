@@ -23,6 +23,7 @@ var moveNodeSelect = document.getElementById('move_node_id');
 var newParentSelect = document.getElementById('new_parent_id');
 var targetPositionSelect = document.getElementById('target_position');
 var baseUnitSelect = document.getElementById('base_unit_id');
+var unitsData = [];
 
 // ---------- Дерево ----------
 
@@ -43,11 +44,67 @@ function loadTree() {
 
 function loadBaseUnits() {
     return apiRequest('/api/units/').then(function (units) {
-        baseUnitSelect.innerHTML = '<option value="">— Не выбрана —</option>';
-        units.forEach(function (unit) {
-            baseUnitSelect.innerHTML += '<option value="' + unit.id + '">' + escapeHtml(unit.symbol + ' — ' + unit.name) + '</option>';
+
+        // Сохраняем полученные единицы измерения
+        unitsData = units || [];
+
+        // Список единиц для категорий
+        baseUnitSelect.innerHTML =
+            '<option value="">— Не выбрана —</option>';
+
+        // Список единиц для товаров
+        var productUnitSelect =
+            document.getElementById('product_unit_id');
+
+        productUnitSelect.innerHTML =
+            '<option value="">— Выберите единицу —</option>';
+
+        unitsData.forEach(function (unit) {
+
+            var title = escapeHtml(unit.symbol + ' — ' + unit.name);
+
+            // Заполняем селект категорий
+            baseUnitSelect.innerHTML +=
+                '<option value="' + unit.id + '">' +
+                title +
+                '</option>';
+
+            // Заполняем селект товаров
+            productUnitSelect.innerHTML +=
+                '<option value="' + unit.id + '">' +
+                title +
+                '</option>';
         });
+
+        // Повторно применяем настройки товара,
+        // если категория и режим уже выбраны
+        if (
+            document.getElementById('type_product').checked &&
+            parentSelect.value
+        ) {
+            applyProductDefaults(Number(parentSelect.value));
+        }
     });
+}
+// Найти ID единицы измерения по символу
+function findUnitIdBySymbol(symbol) {
+
+    var unit = unitsData.find(function (u) {
+        return u.symbol === symbol;
+    });
+
+    return unit ? unit.id : '';
+}
+
+
+// Найти символ единицы измерения по ID
+function getUnitSymbol(unitId) {
+
+    var unit = unitsData.find(function (u) {
+        return String(u.id) === String(unitId);
+    });
+
+    return unit ? unit.symbol : '';
 }
 
 function renderTree() {
@@ -101,6 +158,124 @@ function getNodeById(nodeId) {
         if (nodesData[i].id === nodeId) return nodesData[i];
     }
     return null;
+}
+
+// Получить всех родителей выбранной категории
+function getNodeAncestors(node) {
+
+    var ancestors = [];
+    var parentId = node.parent_id;
+
+    while (parentId !== null && parentId !== undefined) {
+
+        var parent = getNodeById(Number(parentId));
+
+        if (!parent) break;
+
+        ancestors.push(parent);
+
+        parentId = parent.parent_id;
+    }
+
+    return ancestors;
+}
+
+// ID корневой категории «Сырьё и материалы»
+var RESOURCE_ROOT_ID = 21;
+
+
+// Автоматическая настройка товара по выбранной категории
+function applyProductDefaults(catId) {
+
+    catId = Number(catId);
+
+    var node = getNodeById(catId);
+
+    if (!node) return;
+
+    // Получаем всех родителей выбранной категории
+    var ancestors = getNodeAncestors(node);
+
+    // Проверяем принадлежность к ветке «Сырьё и материалы»
+    var inResourceBranch =
+        catId === RESOURCE_ROOT_ID ||
+        ancestors.some(function (a) {
+            return Number(a.id) === RESOURCE_ROOT_ID;
+        });
+
+    var typeSel = document.getElementById('product_type');
+    var unitSel = document.getElementById('product_unit_id');
+    var weightInput = document.getElementById('weight_gram');
+
+
+    // ---------- 1. Определяем тип изделия ----------
+
+    if (inResourceBranch) {
+
+        // Оболочка и упаковка (24) — покупное изделие
+        var inPackagingBranch =
+            catId === 24 ||
+            ancestors.some(function (a) {
+                return Number(a.id) === 24;
+            });
+
+        typeSel.value = inPackagingBranch
+            ? 'purchased'
+            : 'material';
+
+    } else if (
+        catId === 25 ||
+        ancestors.some(function (a) {
+            return Number(a.id) === 25;
+        })
+    ) {
+
+        // Полуфабрикаты
+        typeSel.value = 'part';
+
+    } else if (
+        catId === 26 ||
+        ancestors.some(function (a) {
+            return Number(a.id) === 26;
+        })
+    ) {
+
+        // Наборы
+        typeSel.value = 'kit';
+
+    } else {
+
+        // Все остальные категории
+        typeSel.value = 'part';
+    }
+
+
+    // ---------- 2. Определяем единицу измерения ----------
+
+    // Берём базовую единицу выбранной категории.
+    // Если она не задана — выбираем штуки.
+
+    var baseUnitId = node.base_unit_id ||
+        findUnitIdBySymbol('шт');
+
+    unitSel.value = baseUnitId
+        ? String(baseUnitId)
+        : '';
+
+
+    // ---------- 3. Автоматически заполняем вес ----------
+
+    // Для сырья с базовой единицей «кг»
+    // автоматически ставим 1000 граммов,
+    // но только если пользователь ещё не ввёл вес.
+
+    if (
+        inResourceBranch &&
+        getUnitSymbol(baseUnitId) === 'кг' &&
+        !weightInput.value
+    ) {
+        weightInput.value = 1000;
+    }
 }
 
 function getDescendantsIds(rootId) {
@@ -514,9 +689,18 @@ function fillNodeSelects() {
 }
 
 function toggleProductFields() {
-    var isProduct = document.getElementById('type_product').checked;
+
+    var isProduct =
+        document.getElementById('type_product').checked;
+
     document.getElementById('product_fields').hidden = !isProduct;
+
     document.getElementById('unit_field').hidden = isProduct;
+
+    // Если выбран товар, применяем настройки категории
+    if (isProduct && parentSelect.value) {
+        applyProductDefaults(Number(parentSelect.value));
+    }
 }
 
 function toggleMoveType() {
@@ -571,14 +755,39 @@ addForm.addEventListener('submit', function (e) {
     var url = '/api/categories/add/';
 
     if (isProduct) {
+
         url = '/api/products/add/';
-        payload.sku = document.getElementById('sku').value || null;
-        payload.price = document.getElementById('price').value || 0;
-        payload.supplier = document.getElementById('supplier').value;
-        payload.weight_gram = document.getElementById('weight_gram').value || 0;
+
+        payload.sku =
+            document.getElementById('sku').value || null;
+
+        payload.designation =
+            document.getElementById('designation').value || null;
+
+        payload.product_type =
+            document.getElementById('product_type').value;
+
+        payload.unit_id =
+            document.getElementById('product_unit_id').value
+                ? Number(document.getElementById('product_unit_id').value)
+                : null;
+
+        payload.price =
+            document.getElementById('price').value || 0;
+
+        payload.supplier =
+            document.getElementById('supplier').value;
+
+        payload.weight_gram =
+            document.getElementById('weight_gram').value || 0;
+
     } else {
-        payload.unit = document.getElementById('unit').value || null;
-        payload.base_unit_id = baseUnitSelect.value || null;
+
+        payload.unit =
+            document.getElementById('unit').value || null;
+
+        payload.base_unit_id =
+            baseUnitSelect.value || null;
     }
 
     apiRequest(url, 'POST', payload)
@@ -862,7 +1071,19 @@ function createCharacteristic(form) {
         })
         .catch(function (err) { showMessage(err.message, 'error'); });
 }
-document.getElementById('openModalBtn').onclick = function () { openModal(modal); };
+document.getElementById('openModalBtn').onclick = function () {
+
+    openModal(modal);
+
+    // Применяем настройки при открытии окна,
+    // если выбран режим создания товара
+    if (
+        document.getElementById('type_product').checked &&
+        parentSelect.value
+    ) {
+        applyProductDefaults(Number(parentSelect.value));
+    }
+};
 document.getElementById('openMoveModalBtn').onclick = function () {
     openModal(moveModal);
     updateMoveOptions();
@@ -877,6 +1098,19 @@ document.addEventListener('keydown', function (e) {
 
 document.getElementById('type_category').onchange = toggleProductFields;
 document.getElementById('type_product').onchange = toggleProductFields;
+// При изменении родительской категории настраиваем товар
+parentSelect.addEventListener('change', function () {
+
+    if (!document.getElementById('type_product').checked) {
+        return;
+    }
+
+    var catId = Number(this.value);
+
+    if (catId) {
+        applyProductDefaults(catId);
+    }
+});
 document.getElementById('move_type_parent').onchange = toggleMoveType;
 document.getElementById('move_type_sibling').onchange = toggleMoveType;
 moveNodeSelect.onchange = updateMoveOptions;

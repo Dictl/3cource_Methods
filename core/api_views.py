@@ -323,6 +323,9 @@ def api_add_product(request):
             price=int(payload.get("price")),
             supplier=(payload.get("supplier") or "").strip(),
             weight_gram=int(payload.get("weight_gram")),
+            designation=payload.get("designation"),
+            product_type_code=payload.get("product_type") or "part",
+            unit_id=payload.get("unit_id"),
         )
         return JsonResponse({"ok": True, "data": _serialize_product(product)})
     except (TypeError, ValueError) as e:

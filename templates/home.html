@@ -282,22 +282,50 @@
             </div>
 
             <div id="product_fields" hidden>
+
                 <div class="field">
                     <label for="sku">SKU:</label>
                     <input type="text" id="sku" name="sku">
                 </div>
+
+                <div class="field">
+                    <label for="designation">Обозначение:</label>
+                    <input type="text" id="designation" name="designation">
+                </div>
+
+                <div class="field">
+                    <label for="product_type">Тип изделия:</label>
+                    <select id="product_type" name="product_type">
+                        <option value="material">Материал</option>
+                        <option value="purchased">Покупное изделие</option>
+                        <option value="part">Деталь</option>
+                        <option value="assembly">Сборка</option>
+                        <option value="kit">Набор</option>
+                        <option value="complex">Комплексное изделие</option>
+                    </select>
+                </div>
+
+                <div class="field">
+                    <label for="product_unit_id">Единица измерения:</label>
+                    <select id="product_unit_id" name="unit_id">
+                    </select>
+                </div>
+
                 <div class="field">
                     <label for="price">Цена (руб):</label>
                     <input type="number" id="price" name="price" step="1" min="0">
                 </div>
+
                 <div class="field">
                     <label for="supplier">Поставщик:</label>
                     <input type="text" id="supplier" name="supplier">
                 </div>
+
                 <div class="field">
                     <label for="weight_gram">Вес (г):</label>
                     <input type="number" id="weight_gram" name="weight_gram" step="1" min="0">
                 </div>
+
             </div>
 
             <div class="modal-buttons">
@@ -345,7 +373,7 @@
     </div>
 
     <script src="{% static 'js/common.js' %}?v=202611080037"></script>
-    <script src="{% static 'js/home.js' %}?v=202611080126"></script>
+    <script src="{% static 'js/home.js' %}?v=202611080326"></script>
     <script src="{% static 'js/bom.js' %}?v=202611072219"></script>
     <script src="{% static 'js/route.js' %}?v=202611180300"></script>
     <script src="{% static 'js/refs.js' %}?v=202611080046"></script>

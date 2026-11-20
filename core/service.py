@@ -162,7 +162,9 @@ def add_category(name, parent_id, unit, base_unit_id=None):
     return new_category
 
 "Добавление еще одной продукта в product. Нельзя добавить с таким же имененм, sku и к нетерминальному узлу"
-def add_product(name, category_id, sku, price, supplier, weight_gram):
+"Добавление еще одного продукта в product. Нельзя добавить с таким же имененм, sku и к нетерминальному узлу"
+def add_product(name, category_id, sku, price, supplier, weight_gram,
+                designation=None, product_type_code="part", unit_id=None):
     if Product.objects.filter(name=name).exists():
         raise ValueError(f"Товар с именем '{name}' уже существует")
 
@@ -172,16 +174,74 @@ def add_product(name, category_id, sku, price, supplier, weight_gram):
     if ClassifierNode.objects.filter(parent_id=category_id).exists():
         raise ValueError("Нельзя добавить товар к нетерминальному узлу, содержащему подкатегории")
 
+    product_type_code = (product_type_code or "part").strip()
+    if product_type_code not in ("material", "purchased", "part", "assembly", "kit", "complex"):
+        raise ValueError("Некорректный тип изделия")
+
+    designation = (designation or "").strip() or None
+    if designation and Product.objects.filter(designation__iexact=designation).exists():
+        raise ValueError(f"Изделие с обозначением '{designation}' уже существует")
+
+    if unit_id in (None, ""):
+        unit_id = None
+    else:
+        unit_id = int(unit_id)
+        if not Unit.objects.filter(id=unit_id).exists():
+            raise ValueError("Нет такой единицы измерения")
+
     new_product = Product(
         name=name,
         classifier_node_id=category_id,
         sku=sku,
         price=price,
         supplier=supplier,
-        weight_gram=weight_gram
+        weight_gram=weight_gram,
+        designation=designation,
+        product_type_id=product_type_code,   # если в модели поле называется product_type (FK по коду)
+        unit_id=unit_id,
     )
     new_product.save()
+    _apply_class_parameter_defaults(new_product)
     return new_product
+
+"Значения параметров по умолчанию для новых товаров веток «Сырьё и материалы», «Полуфабрикаты», «Наборы»"
+_CLASS_PARAMETER_DEFAULTS = {
+    21: {"Массовая доля влаги": ("real", 68),
+         "Срок хранения": ("int", 30),
+         "Температура хранения": ("real", 2)},
+    24: {"Длина единицы": ("real", 1),
+         "Количество в упаковке": ("int", 1)},
+    25: {"Выход полуфабриката": ("real", 98),
+         "Срок хранения": ("int", 30)},
+    26: {"Количество изделий": ("int", 2)},
+}
+
+def _apply_class_parameter_defaults(product):
+    node_ids = [n.id for n in search_parent_nodes(base_output(), product.classifier_node_id)]
+    node_ids.append(product.classifier_node_id)
+
+    for node_id in node_ids:
+        for param_name, (vtype, value) in _CLASS_PARAMETER_DEFAULTS.get(node_id, {}).items():
+            pd = ParameterDefinition.objects.filter(
+                classifier_node_id=node_id, name=param_name
+            ).first()
+            if pd is None:
+                continue
+            defaults = {"value_int": value} if vtype == "int" else {"value_real": value}
+            ProductParameterValue.objects.get_or_create(
+                product_id=product.id,
+                parameter_definition_id=pd.id,
+                defaults=defaults,
+            )
+
+    # масса набора считается от веса товара
+    if 26 in node_ids:
+        pd = ParameterDefinition.objects.filter(classifier_node_id=26, name="Масса набора").first()
+        if pd:
+            ProductParameterValue.objects.get_or_create(
+                product_id=product.id, parameter_definition_id=pd.id,
+                defaults={"value_real": product.weight_gram / 1000},
+            )
 
 "рекурсивное удаление категории(classifier_node)"
 def search_delete_category(delete_id):

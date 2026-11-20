@@ -16,7 +16,8 @@ SCHEMA_PATCHES = {
     3: settings.BASE_DIR / 'schema_patch_v3.sql',
     4: settings.BASE_DIR / 'schema_patch_v4.sql',
     6: settings.BASE_DIR / 'schema_patch_v6.sql',
-    7: settings.BASE_DIR / 'schema_patch_v7.sql',
+    ##7: settings.BASE_DIR / 'schema_patch_v7.sql',
+    ##8: settings.BASE_DIR / 'schema_patch_v8.sql',
 }
 SCHEMA_VERSION = max(SCHEMA_PATCHES)
 SCHEMA_MARKER_TABLE = 'bom_item'

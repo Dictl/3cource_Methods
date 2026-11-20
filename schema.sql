@@ -2096,17 +2096,17 @@ RETURNS TABLE (
     ORDER BY r.profession, r.grade;
 $$ LANGUAGE sql STABLE;
 
--- Калькуляция: стоимость труда на p_q изделий и себестоимость единицы
-DROP FUNCTION IF EXISTS calc_cost(INTEGER, DOUBLE PRECISION);
-
+-- Калькуляция: материалы + труд на p_q изделий и себестоимость единицы
 CREATE OR REPLACE FUNCTION calc_cost(p_id_prod INTEGER, p_q DOUBLE PRECISION DEFAULT 1)
 RETURNS TABLE (
-    labor_cost  NUMERIC,
-    unit_cost   NUMERIC
+    material_cost  NUMERIC,
+    labor_cost     NUMERIC,
+    total_cost     NUMERIC,
+    unit_cost      NUMERIC
 ) AS $$
-    SELECT COALESCE(SUM(b.total_cost), 0),
-           ROUND(COALESCE(SUM(b.total_cost), 0) / p_q::NUMERIC, 2)
-    FROM calc_labor(p_id_prod, p_q) b;
+    SELECT m.v, l.v, m.v + l.v, ROUND((m.v + l.v) / p_q::NUMERIC, 2)
+    FROM (SELECT COALESCE(SUM(c.total_cost), 0) AS v FROM calc_bom(p_id_prod, p_q) c) m,
+         (SELECT COALESCE(SUM(b.total_cost), 0) AS v FROM calc_labor(p_id_prod, p_q) b) l;
 $$ LANGUAGE sql STABLE;
 DELETE FROM schema_version;
 INSERT INTO schema_version (version) VALUES (5);
