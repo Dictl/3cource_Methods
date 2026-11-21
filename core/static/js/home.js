@@ -573,7 +573,8 @@ function renderProductCard(product, extra, availableParameters, availableEnums, 
 
     var canHaveBom = ['part', 'assembly', 'kit', 'complex'].indexOf(product.product_type) !== -1;
     if (canHaveBom) {
-        html += '<p><a href="#bom/' + product.id + '">Открыть спецификацию (состав) &rarr;</a></p>';
+        html += '<p><a href="#bom/' + product.id + '">Открыть спецификацию (состав) &rarr;</a>'
+            + '<br><a href="#route/' + product.id + '">Открыть маршрут (техпроцесс) &rarr;</a></p>';
     } else {
         html += '<p class="hint">Это ' + productTypeName(product.product_type).toLowerCase()
             + ' &mdash; у него нет своего состава, оно само входит в состав других изделий.</p>';
