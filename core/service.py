@@ -1,4 +1,5 @@
 from decimal import Decimal
+from math import isfinite
 from core.models import (
     ClassifierNode,
     Product,
@@ -1186,6 +1187,8 @@ def _check_quantity(quantity):
         quantity = float(quantity)
     except (TypeError, ValueError):
         raise ValueError("Количество должно быть числом")
+    if not isfinite(quantity):
+        raise ValueError("Количество должно быть конечным числом")
     if quantity <= 0:
         raise ValueError("Количество должно быть больше нуля")
     return quantity
@@ -2131,6 +2134,18 @@ def delete_operation_material(operation_material_id):
 def find_route_deep(product_id):
     product_id = _check_product_exists(product_id)
     return _call_db_function("SELECT * FROM find_route_deep(%s)", [product_id])
+
+"Нормы материалов одной операции на заданное количество изделий"
+def mr_q(operation_id, quantity=1):
+    operation = _get_by_id(RouteOperation, operation_id, "операция маршрута")
+    quantity = _check_quantity(quantity)
+    return _call_db_function("SELECT * FROM mr_q(%s, %s)", [operation.id, quantity])
+
+"Сводные нормы материалов по маршрутам изделия"
+def sum_mr(product_id, quantity=1):
+    product_id = _check_product_exists(product_id)
+    quantity = _check_quantity(quantity)
+    return _call_db_function("SELECT * FROM sum_mr(%s, %s)", [product_id, quantity])
 
 "Потребность в трудовых ресурсах на quantity изделий: часы и стоимость по профессиям"
 def calc_labor(product_id, quantity=1):

@@ -322,11 +322,6 @@ BEFORE INSERT OR UPDATE ON product_parameter_value
 FOR EACH ROW
 EXECUTE FUNCTION check_parameter_belongs_to_product_class();
 
--- Версия схемы: по ней bootstrap понимает, какие инкрементальные патчи применить к готовой базе
-CREATE TABLE IF NOT EXISTS schema_version (
-    version INTEGER NOT NULL
-);
-
 -- =====================================================
 -- 8. Начальные данные
 -- =====================================================
@@ -897,8 +892,6 @@ EXECUTE FUNCTION log_bom_change();
 -- последующие правки состава этого изделия попадут в журнал с этим изменением.
 -- Прежняя версия с двумя аргументами заменяется: перегрузку убираем, вызовы с 2 аргументами
 -- продолжают работать через значение по умолчанию p_author.
-DROP FUNCTION IF EXISTS register_change(INTEGER, TEXT);
-
 CREATE OR REPLACE FUNCTION register_change(p_id_prod INTEGER, p_change_desc TEXT, p_author TEXT DEFAULT NULL)
 RETURNS INTEGER AS $$
 DECLARE
@@ -1185,10 +1178,6 @@ BEGIN
     PERFORM set_config('bom.change_id', '', TRUE);
 END;
 $$;
-
--- Версия схемы для bootstrap и schema_patch_v2.sql
-DELETE FROM schema_version;
-INSERT INTO schema_version (version) VALUES (2);
 
 -- =====================================================
 -- 17. Дополнительные реалистичные данные по колбасным изделиям
@@ -1946,14 +1935,7 @@ JOIN product m          ON m.designation = v.material_designation
 JOIN unit u             ON u.symbol = v.unit_symbol
 ON CONFLICT (route_operation_id, product_id) DO NOTHING;
 
--- Фиксируем версию схемы
-CREATE TABLE IF NOT EXISTS schema_version (
-    version INTEGER NOT NULL
-);
-
-DELETE FROM schema_version;
-INSERT INTO schema_version (version) VALUES (3);
-
+-- =====================================================
 -- 21. Правила для маршрутов
 -- =====================================================
 
@@ -1999,13 +1981,10 @@ BEFORE UPDATE OF product_type_code ON product
 FOR EACH ROW
 EXECUTE FUNCTION check_product_type_routes();
 
--- Фиксируем версию схемы
-CREATE TABLE IF NOT EXISTS schema_version (
-    version INTEGER NOT NULL
-);
+-- =====================================================
+-- 22. Анализ технологичности и калькуляция
+-- =====================================================
 
-DELETE FROM schema_version;
-INSERT INTO schema_version (version) VALUES (4);
 -- Анализ технологичности: операции маршрутов изделия и всех его компонентов
 CREATE OR REPLACE FUNCTION find_route_deep(p_id_prod INTEGER)
 RETURNS TABLE (
@@ -2096,6 +2075,69 @@ RETURNS TABLE (
     ORDER BY r.profession, r.grade;
 $$ LANGUAGE sql STABLE;
 
+-- ROUTE_MATERIAL_FUNCTIONS_BEGIN
+CREATE OR REPLACE FUNCTION mr_q(p_id_to INTEGER, p_q DOUBLE PRECISION DEFAULT 1)
+RETURNS TABLE (
+    component_id INTEGER, designation VARCHAR, name TEXT, classifier_node_id INTEGER,
+    class_name TEXT, product_type_code VARCHAR, total_quantity NUMERIC, unit VARCHAR, total_cost NUMERIC
+) AS $$
+    SELECT p.id, p.designation, p.name, p.classifier_node_id, cn.name, p.product_type_code,
+           trim_scale(norm.quantity), u.symbol, ROUND(norm.quantity * p.price, 2)
+    FROM route_operation_material m
+    JOIN product p ON p.id = m.product_id
+    JOIN classifier_node cn ON cn.id = p.classifier_node_id
+    JOIN unit u ON u.id = COALESCE(p.unit_id, m.unit_id)
+    CROSS JOIN LATERAL (SELECT unit_convert(m.quantity * p_q::NUMERIC / m.per_quantity, m.unit_id, u.id) AS quantity) norm
+    WHERE m.route_operation_id = p_id_to
+    ORDER BY p.name, p.id;
+$$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION route_material_tree(p_product_id INTEGER, p_q NUMERIC, p_path INTEGER[])
+RETURNS TABLE (component_id INTEGER, total_quantity NUMERIC, unit_id INTEGER) AS $$
+DECLARE
+    item RECORD;
+BEGIN
+    IF p_product_id = ANY(p_path) THEN
+        RAISE EXCEPTION 'Цикл материалов маршрута для изделия %', p_product_id;
+    END IF;
+    FOR item IN
+        SELECT m.product_id, COALESCE(p.unit_id, m.unit_id) AS unit_id,
+               unit_convert(m.quantity * p_q / m.per_quantity, m.unit_id, COALESCE(p.unit_id, m.unit_id)) AS quantity
+        FROM route r
+        JOIN route_operation ro ON ro.route_id = r.id
+        JOIN route_operation_material m ON m.route_operation_id = ro.id
+        JOIN product p ON p.id = m.product_id
+        WHERE r.product_id = p_product_id
+          AND r.route_no = (SELECT MAX(r2.route_no) FROM route r2 WHERE r2.product_id = p_product_id)
+    LOOP
+        IF EXISTS (
+            SELECT 1 FROM route r JOIN route_operation ro ON ro.route_id = r.id
+            WHERE r.product_id = item.product_id
+              AND r.route_no = (SELECT MAX(r2.route_no) FROM route r2 WHERE r2.product_id = item.product_id)
+        ) THEN
+            RETURN QUERY SELECT * FROM route_material_tree(item.product_id, item.quantity, p_path || p_product_id);
+        ELSE
+            RETURN QUERY SELECT item.product_id, item.quantity, item.unit_id;
+        END IF;
+    END LOOP;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION sum_mr(p_id_prod INTEGER, p_q DOUBLE PRECISION DEFAULT 1)
+RETURNS TABLE (
+    component_id INTEGER, designation VARCHAR, name TEXT, classifier_node_id INTEGER,
+    class_name TEXT, product_type_code VARCHAR, total_quantity NUMERIC, unit VARCHAR, total_cost NUMERIC
+) AS $$
+    SELECT p.id, p.designation, p.name, p.classifier_node_id, cn.name, p.product_type_code,
+           trim_scale(SUM(t.total_quantity)), u.symbol, ROUND(SUM(t.total_quantity) * p.price, 2)
+    FROM route_material_tree(p_id_prod, p_q::NUMERIC, ARRAY[]::INTEGER[]) t
+    JOIN product p ON p.id = t.component_id
+    JOIN classifier_node cn ON cn.id = p.classifier_node_id
+    JOIN unit u ON u.id = t.unit_id
+    GROUP BY p.id, cn.name, u.id, u.symbol
+    ORDER BY cn.name, p.name;
+$$ LANGUAGE sql STABLE;
+
 -- Калькуляция: материалы + труд на p_q изделий и себестоимость единицы
 CREATE OR REPLACE FUNCTION calc_cost(p_id_prod INTEGER, p_q DOUBLE PRECISION DEFAULT 1)
 RETURNS TABLE (
@@ -2105,8 +2147,14 @@ RETURNS TABLE (
     unit_cost      NUMERIC
 ) AS $$
     SELECT m.v, l.v, m.v + l.v, ROUND((m.v + l.v) / p_q::NUMERIC, 2)
-    FROM (SELECT COALESCE(SUM(c.total_cost), 0) AS v FROM calc_bom(p_id_prod, p_q) c) m,
+    FROM (SELECT COALESCE(SUM(c.total_cost), 0) AS v FROM sum_mr(p_id_prod, p_q) c) m,
          (SELECT COALESCE(SUM(b.total_cost), 0) AS v FROM calc_labor(p_id_prod, p_q) b) l;
 $$ LANGUAGE sql STABLE;
-DELETE FROM schema_version;
-INSERT INTO schema_version (version) VALUES (5);
+-- ROUTE_MATERIAL_FUNCTIONS_END
+
+-- Отметка для bootstrap: все объекты и начальные данные уже загружены.
+CREATE TABLE schema_version (
+    version INTEGER NOT NULL
+);
+
+INSERT INTO schema_version (version) VALUES (7);

@@ -127,7 +127,9 @@ urlpatterns += [
     path('route-operation-materials/add/', api_views.api_add_operation_material, name='api_add_operation_material'),
     path('route-operation-materials/update/', api_views.api_update_operation_material, name='api_update_operation_material'),
     path('route-operation-materials/<int:operation_material_id>/delete/', api_views.api_delete_operation_material, name='api_delete_operation_material'),
+    path('route-operations/<int:operation_id>/materials-norm/', api_views.api_operation_materials_norm, name='api_operation_materials_norm'),
     path('technology/<int:product_id>/routes/', api_views.api_technology_routes, name='api_technology_routes'),
+    path('technology/<int:product_id>/materials/', api_views.api_technology_materials, name='api_technology_materials'),
     path('technology/<int:product_id>/labor/', api_views.api_technology_labor, name='api_technology_labor'),
     path('technology/<int:product_id>/cost/', api_views.api_technology_cost, name='api_technology_cost'),
 ]

@@ -475,15 +475,15 @@ function loadRouteCalc() {
         ], rows, 'Маршруты для изделия и его компонентов не заданы');
     }).catch(function (e) { show('routeDeep', e); });
 
-    // 3. материалы (расчёт по спецификации) и труд
-    apiRequest('/api/bom/' + pid + '/calc/?quantity=' + q).then(function (rows) {
+    // 3. материалы маршрута и труд
+    apiRequest('/api/technology/' + pid + '/materials/?quantity=' + q).then(function (rows) {
         document.getElementById('routeMaterials').innerHTML = renderTable([
             { title: 'Обозначение', render: function (r) { return escapeHtml(r.designation || '—'); } },
             { title: 'Наименование', render: function (r) { return escapeHtml(r.name); } },
             { title: 'Класс', render: function (r) { return escapeHtml(r.class_name); } },
             { title: 'Количество', num: true, render: function (r) { return formatNumber(r.total_quantity) + ' ' + escapeHtml(r.unit); } },
             { title: 'Стоимость, руб', num: true, render: function (r) { return formatNumber(r.total_cost); } }
-        ], rows, 'Состав изделия не задан');
+        ], rows, 'Материалы маршрута не заданы');
     }).catch(function (e) { show('routeMaterials', e); });
 
     apiRequest('/api/technology/' + pid + '/labor/?quantity=' + q).then(function (rows) {

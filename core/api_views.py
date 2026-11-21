@@ -67,6 +67,8 @@ from .service import (
     get_bom_changes,
     get_bom_change_log,
     find_route_deep,
+    mr_q,
+    sum_mr,
     calc_labor,
     calc_cost,
 )
@@ -2047,6 +2049,24 @@ def api_delete_operation_material(request, operation_material_id):
 def api_technology_routes(request, product_id):
     try:
         rows = find_route_deep(product_id)
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Нормы материалов одной операции"
+@require_http_methods(["GET"])
+def api_operation_materials_norm(request, operation_id):
+    try:
+        rows = mr_q(operation_id, request.GET.get("quantity", 1))
+        return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
+    except (TypeError, ValueError) as e:
+        return _json_error(str(e))
+
+"Сводные нормы материалов маршрута"
+@require_http_methods(["GET"])
+def api_technology_materials(request, product_id):
+    try:
+        rows = sum_mr(product_id, request.GET.get("quantity", 1))
         return JsonResponse({"ok": True, "data": [_serialize_db_row(r) for r in rows]})
     except (TypeError, ValueError) as e:
         return _json_error(str(e))
